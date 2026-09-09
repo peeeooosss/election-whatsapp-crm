@@ -85,11 +85,7 @@ function saveTransactions() { writeJSON(TX_FILE, transactions); }
 
 // --- CREDIT TIERS ---
 const CREDIT_TIERS = [
-  { label: 'Starter',   credits: 100,    price: 49   },
-  { label: 'Basic',     credits: 500,    price: 199  },
-  { label: 'Standard',  credits: 1000,   price: 349  },
-  { label: 'Business',  credits: 5000,   price: 1499 },
-  { label: 'Enterprise', credits: 10000, price: 2499 },
+  { label: 'Standard', credits: 120, price: 49 }, // ₹0.40/msg — min 100, max 1000
 ];
 
 // --- WHATSAPP SOCKET ---
@@ -107,6 +103,8 @@ const progress = {
   startedAt: null,
 };
 
+let whatsAppConnected = false;
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function connectToWhatsApp() {
@@ -123,14 +121,16 @@ async function connectToWhatsApp() {
   newSock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect } = update;
     if (connection === 'close') {
+      whatsAppConnected = false;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
       console.log(`[whatsapp] Connection closed (status ${statusCode}). Logged out: ${isLoggedOut}`);
       if (isLoggedOut) { sock = null; return; }
       reconnectTimer = setTimeout(() => { console.log('[whatsapp] Reconnecting...'); connectToWhatsApp(); }, 3000);
     } else if (connection === 'open') {
+      whatsAppConnected = true;
       console.log('[whatsapp] Connection opened successfully!');
-    }
+}
   });
 }
 
@@ -278,7 +278,10 @@ app.post('/api/request-code', authMiddleware, async (req, res) => {
     return res.status(500).json({ error: 'WhatsApp engine not initialized' });
   }
   try {
-    const cleanNumber = String(phoneNumber).replace(/\D/g, '');
+    let cleanNumber = String(phoneNumber).replace(/\D/g, '');
+    if (cleanNumber.length === 10) {
+      cleanNumber = DEFAULT_COUNTRY_CODE + cleanNumber;
+    }
     const code = await sock.requestPairingCode(cleanNumber);
     console.log(`[whatsapp] Pairing code generated for ${cleanNumber}`);
     res.json({ success: true, code });
@@ -299,7 +302,7 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   if (list.length === 0) {
     return res.status(400).json({ error: 'No targets provided.' });
   }
-  if (sock.type !== 'open') {
+  if (!whatsAppConnected) {
     return res.status(400).json({ error: 'WhatsApp is not connected yet. Generate a pairing code and link your device first.' });
   }
   if (progress.running) {
@@ -412,7 +415,7 @@ app.get('/api/progress', (req, res) => {
 
 // --- STATUS ---
 app.get('/api/status', (req, res) => {
-  const connected = !!sock && sock.type === 'open';
+  const connected = !!sock && whatsAppConnected;
   res.json({ connected });
 });
 

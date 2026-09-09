@@ -18,19 +18,13 @@
     return res.json();
   }
 
-  // --- Elements ---
+// --- Elements ---
   const creditBadge = document.getElementById('creditBadge');
   const adminLink = document.getElementById('adminLink');
   const phoneInput = document.getElementById('phoneInput');
   const getPairingBtn = document.getElementById('getPairingBtn');
   const pairingCodeDisplay = document.getElementById('pairingCodeDisplay');
   const connStatus = document.getElementById('connStatus');
-  const tierGrid = document.getElementById('tierGrid');
-  const upiBox = document.getElementById('upiBox');
-  const upiIdDisplay = document.getElementById('upiIdDisplay');
-  const buyAction = document.getElementById('buyAction');
-  const submitPaymentBtn = document.getElementById('submitPaymentBtn');
-  const buyStatus = document.getElementById('buyStatus');
   const fileInput = document.getElementById('fileInput');
   const crmSection = document.getElementById('crmSection');
   const crmSearch = document.getElementById('crmSearch');
@@ -48,8 +42,6 @@
   // --- State ---
   let allData = [];
   let filteredData = [];
-  let tiers = [];
-  let selectedTier = null;
   let progressTimer = null;
 
   // --- Profile ---
@@ -63,56 +55,6 @@
       adminLink.style.display = 'inline';
     }
   }
-
-  // --- Tiers ---
-  async function loadTiers() {
-    const data = await api('/api/tiers');
-    if (!data) return;
-    tiers = data.tiers || [];
-    upiIdDisplay.textContent = data.upiId || 'yourname@upi';
-    renderTiers();
-  }
-
-  function renderTiers() {
-    tierGrid.innerHTML = tiers.map((t, i) => {
-      const perMsg = (t.price / t.credits).toFixed(2);
-      const popular = i === 2 ? ' popular' : '';
-      return `<div class="tier-card${popular}" data-index="${i}">
-        <div class="tier-label">${t.label}</div>
-        <div class="tier-msgs">${t.credits.toLocaleString()}<br><small>messages</small></div>
-        <div class="tier-price">₹${t.price.toLocaleString()}</div>
-        <div class="tier-per">₹${perMsg}/msg</div>
-      </div>`;
-    }).join('');
-
-    tierGrid.querySelectorAll('.tier-card').forEach(card => {
-      card.onclick = () => {
-        tierGrid.querySelectorAll('.tier-card').forEach(c => c.style.borderColor = '#e0e0e0');
-        card.style.borderColor = 'var(--primary)';
-        selectedTier = parseInt(card.dataset.index);
-        upiBox.style.display = 'block';
-        buyAction.style.display = 'block';
-      };
-    });
-  }
-
-  submitPaymentBtn.onclick = async () => {
-    if (selectedTier === null) return alert('Select a pack first');
-    submitPaymentBtn.disabled = true;
-    buyStatus.style.display = 'inline-block';
-    buyStatus.textContent = 'Submitting...';
-    const data = await api('/api/purchase', { method: 'POST', body: JSON.stringify({ tierIndex: selectedTier }) });
-    if (data && data.success) {
-      buyStatus.textContent = `Request submitted! (ID: ${data.transactionId}). Admin will approve after UPI verification.`;
-      buyStatus.className = 'status-bar success';
-      buyStatus.style.display = 'inline-block';
-    } else {
-      buyStatus.textContent = data?.error || 'Failed';
-      buyStatus.className = 'status-bar error';
-      buyStatus.style.display = 'inline-block';
-    }
-    submitPaymentBtn.disabled = false;
-  };
 
   // --- WhatsApp Connection ---
   getPairingBtn.onclick = async () => {
@@ -292,7 +234,6 @@
 
   // --- Init ---
   loadProfile();
-  loadTiers();
   checkConnection();
   setInterval(checkConnection, 10000);
 })();
