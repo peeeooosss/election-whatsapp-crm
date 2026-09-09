@@ -5,6 +5,9 @@ node_modules/
 sessions/
 /data/sessions
 
+# User data / credit records
+data/
+
 # Environment / secrets
 .env
 

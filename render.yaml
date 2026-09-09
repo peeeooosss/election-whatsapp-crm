@@ -13,8 +13,6 @@ services:
         value: 0.0.0.0
       - key: DEFAULT_COUNTRY_CODE
         value: "91"
-      - key: SESSIONS_DIR
-        value: /data/sessions
       - key: MIN_DELAY_MS
         value: "30000"
       - key: MAX_DELAY_MS
@@ -25,7 +23,11 @@ services:
         value: "900000"
       - key: LOG_LEVEL
         value: "silent"
-    disk:
-      name: whatsapp-sessions-data
-      mountPath: /data
-      sizeGB: 1
+      - key: JWT_SECRET
+        value: "CHANGE_ME_TO_A_RANDOM_STRING"
+      - key: ADMIN_EMAIL
+        value: "piyushbhuyan71@gmail.com"
+      - key: UPI_ID
+        value: "yourname@upi"
+      - key: UPI_NAME
+        value: "Your Name"

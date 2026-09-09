@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Campaign Manager</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<nav class="navbar">
+    <a href="/app" class="navbar-brand">📱 WhatsApp Campaign</a>
+    <div class="navbar-right">
+        <span class="credit-badge" id="creditBadge">Credits: 0</span>
+        <a href="/admin" class="nav-link" id="adminLink" style="display:none;">Admin</a>
+        <a class="nav-link" id="logoutBtn" style="cursor:pointer;">Logout</a>
+    </div>
+</nav>
+
+<div class="container">
+
+    <!-- Section 1: WhatsApp Connection -->
+    <div class="card">
+        <h2>WhatsApp Connection</h2>
+        <div class="conn-box">
+            <input type="text" id="phoneInput" placeholder="Enter phone (e.g. 919876543210)" style="flex:1;">
+            <button class="btn btn-primary" id="getPairingBtn" style="width:auto;">Get Pairing Code</button>
+            <span class="conn-status disconnected" id="connStatus"><span class="dot"></span> Checking...</span>
+        </div>
+        <div class="code-display" id="pairingCodeDisplay"></div>
+        <p class="text-muted" style="font-size:0.85em; margin-top:10px;">Go to WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead.</p>
+    </div>
+
+    <!-- Section 2: Buy Credits -->
+    <div class="card" id="buySection">
+        <h2>Buy Credits</h2>
+        <p class="text-muted" style="margin-bottom:12px;">Select a pack, pay via UPI, then submit your request. Credits never expire.</p>
+        <div class="tier-grid" id="tierGrid"></div>
+        <div class="upi-box" id="upiBox" style="display:none;">
+            <p>Send payment to UPI ID:</p>
+            <div class="upi-id" id="upiIdDisplay"></div>
+            <p class="text-muted" style="font-size:0.85em; margin-top:8px;">After paying, click "Submit Request" below. Admin will verify and add credits.</p>
+        </div>
+        <div class="mt-16" id="buyAction" style="display:none;">
+            <button class="btn btn-success" id="submitPaymentBtn">Submit Payment Request</button>
+            <span id="buyStatus" class="status-bar info" style="display:inline-block; margin-left:12px;"></span>
+        </div>
+    </div>
+
+    <!-- Section 3: Upload Voter List -->
+    <div class="card">
+        <h2>Upload Voter List (Excel)</h2>
+        <input type="file" id="fileInput" accept=".xlsx,.xls" style="margin-bottom:12px;">
+        <div id="crmSection" style="display:none;">
+            <div class="filters">
+                <input type="text" id="crmSearch" placeholder="Search Name or Phone..." oninput="window._crmRender && window._crmRender()" style="flex:1; min-width:200px;">
+                <select id="crmDeptFilter" onchange="window._crmRender && window._crmRender()"><option value="">All Departments</option></select>
+                <select id="crmYearFilter" onchange="window._crmRender && window._crmRender()"><option value="">All Years</option></select>
+                <span class="row-count">Showing: <span id="rowCount">0</span> voters</span>
+            </div>
+            <div class="table-container">
+                <table id="crmTable">
+                    <thead><tr><th>Name</th><th>Phone</th><th>Department</th><th>Year</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Section 4: Message Composer -->
+    <div class="card">
+        <h2>Message Composer</h2>
+        <div class="tags">
+            <span>Insert Tags:</span>
+            <button class="tag-btn" data-tag="{Name}">[+ Name]</button>
+            <button class="tag-btn" data-tag="{Department}">[+ Dept]</button>
+            <button class="tag-btn" data-tag="{Year}">[+ Year]</button>
+        </div>
+        <textarea id="messageTemplate" placeholder="Hello {Name}, this is a reminder for the upcoming election in {Department}..."></textarea>
+        <button class="btn btn-success" id="startBtn" style="font-size:1.1em; margin-top:12px;">🚀 Start Campaign</button>
+        <div id="campaignStatus" class="status-bar" style="display:none;"></div>
+    </div>
+
+    <!-- Section 5: Credit History -->
+    <div class="card">
+        <h2 style="cursor:pointer;" id="historyToggle">▶ Credit History</h2>
+        <div id="historyContent" style="display:none; margin-top:12px;">
+            <div id="creditHistoryList"></div>
+        </div>
+    </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

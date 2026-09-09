@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - WhatsApp Campaign Manager</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="navbar">
+    <a href="/app" class="navbar-brand">← Back to Campaign</a>
+    <div class="navbar-right">
+        <span style="color:rgba(255,255,255,0.6); font-size:0.85em;">Admin Panel</span>
+        <a class="nav-link" id="logoutBtn" style="cursor:pointer;">Logout</a>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="flex-between mb-16">
+        <h1 style="font-size:1.4em; color:var(--dark);">Admin Dashboard</h1>
+        <span class="text-muted" style="font-size:0.85em;" id="lastUpdated"></span>
+    </div>
+
+    <div id="adminError"></div>
+
+    <!-- Stats -->
+    <div class="admin-stats" id="statsGrid"></div>
+
+    <!-- Pending Purchases -->
+    <div class="card">
+        <h2>Pending Purchases</h2>
+        <div id="pendingList"></div>
+    </div>
+
+    <!-- All Transactions -->
+    <div class="card">
+        <h2>All Transactions</h2>
+        <div id="txList" style="max-height:500px; overflow-y:auto;"></div>
+    </div>
+
+    <!-- All Users -->
+    <div class="card">
+        <h2>All Users</h2>
+        <div class="table-container" id="usersWrap"></div>
+    </div>
+</div>
+
+<script src="admin.js"></script>
+</body>
+</html>

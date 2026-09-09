@@ -3,77 +3,119 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Election Campaign Manager</title>
-    <!-- SheetJS for Excel Parsing -->
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+    <title>WhatsApp Campaign Manager - Login</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div class="auth-wrapper">
+    <div class="auth-card">
+        <div class="logo">📱</div>
+        <h1>WhatsApp Campaign Manager</h1>
+        <p class="subtitle">Send bulk messages at fraction of Meta's cost</p>
 
-<div class="container">
-    <h1>🗳️ Election Campaign Bulk Sender</h1>
+        <div id="authError" class="status-bar error" style="display:none; margin-bottom:12px;"></div>
+        <div id="authSuccess" class="status-bar success" style="display:none; margin-bottom:12px;"></div>
 
-    <!-- 1. Connection Section -->
-    <div class="card">
-        <h2>1. WhatsApp Connection</h2>
-        <p>Enter your WhatsApp number (with country code) to get a pairing code. Now showing connection status.</p>
-        <div class="conn-box">
-            <input type="text" id="phoneInput" placeholder="Enter Phone Number (e.g. 911123456789)">
-            <button onclick="requestPairingCode()">Get Pairing Code</button>
-            <div class="loader" id="connLoader"></div>
-            <span id="connStatus" class="conn-status disconnected"><span class="dot"></span> Checking...</span>
-        </div>
-        <div id="pairingCodeDisplay" class="code-display"></div>
-        <p><small>Tip: In WhatsApp, go to <strong>Settings &gt; Linked Devices &gt; Link a Device</strong> and choose <strong>Link with phone number instead</strong>.</small></p>
-    </div>
-
-    <!-- 2. File Upload & CRM -->
-    <div class="card">
-        <h2>2. Upload Voter List (Excel)</h2>
-        <input type="file" id="excelFile" accept=".xlsx, .xls" onchange="handleFileUpload()">
-
-        <div id="crmSection" style="display:none; margin-top: 20px;">
-            <div class="filters">
-                <input type="text" id="searchBox" placeholder="Search Name or Phone..." onkeyup="renderTable()">
-                <select id="filterDept" onchange="renderTable()"><option value="">All Departments</option></select>
-                <select id="filterYear" onchange="renderTable()"><option value="">All Years</option></select>
-                <span class="row-count">Showing: <span id="rowCount">0</span> voters</span>
+        <!-- Login Form -->
+        <form id="loginForm">
+            <div class="form-group">
+                <label>Email</label>
+                <input type="email" id="loginEmail" placeholder="you@example.com" required>
             </div>
-
-            <div class="table-container">
-                <table id="crmTable">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Phone</th>
-                            <th>Department</th>
-                            <th>Year</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="loginPassword" placeholder="Enter password" required>
             </div>
-        </div>
-    </div>
+            <button type="submit" class="btn btn-primary">Login</button>
+            <p class="auth-toggle">Don't have an account? <a id="toggleToRegister">Register free</a></p>
+        </form>
 
-    <!-- 3. Message Composer -->
-    <div class="card">
-        <h2>3. Message Composer</h2>
-        <div class="composer-box">
-            <div class="tags">
-                <span>Insert Tags: </span>
-                <button class="tag-btn" onclick="insertTag('{Name}')">[+ Name]</button>
-                <button class="tag-btn" onclick="insertTag('{Department}')">[+ Dept]</button>
-                <button class="tag-btn" onclick="insertTag('{Year}')">[+ Year]</button>
+        <!-- Register Form -->
+        <form id="registerForm" style="display:none;">
+            <div class="form-group">
+                <label>Full Name</label>
+                <input type="text" id="regName" placeholder="Your name" required>
             </div>
-            <textarea id="messageTemplate" placeholder="Hello {Name}, this is a reminder for the upcoming election in {Department}..."></textarea>
-
-            <button id="startBtn" onclick="startCampaign()" style="background-color: var(--primary); font-size: 1.1em;">🚀 Start Campaign</button>
-            <div id="campaignStatus" class="status-bar"></div>
-        </div>
+            <div class="form-group">
+                <label>Email</label>
+                <input type="email" id="regEmail" placeholder="you@example.com" required>
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="regPassword" placeholder="Min 6 characters" required minlength="6">
+            </div>
+            <button type="submit" class="btn btn-primary">Create Account</button>
+            <p class="auth-toggle">Already have an account? <a id="toggleToLogin">Login</a></p>
+        </form>
     </div>
 </div>
+<script>
+    const authError = document.getElementById('authError');
+    const authSuccess = document.getElementById('authSuccess');
+    function showError(msg) { authError.style.display = 'block'; authError.textContent = msg; }
+    function showSuccess(msg) { authSuccess.style.display = 'block'; authSuccess.textContent = msg; }
 
-<script src="app.js"></script>
+    document.getElementById('toggleToRegister').onclick = () => {
+        document.getElementById('loginForm').style.display = 'none';
+        document.getElementById('registerForm').style.display = 'block';
+        authError.style.display = 'none'; authSuccess.style.display = 'none';
+    };
+    document.getElementById('toggleToLogin').onclick = () => {
+        document.getElementById('registerForm').style.display = 'none';
+        document.getElementById('loginForm').style.display = 'block';
+        authError.style.display = 'none'; authSuccess.style.display = 'none';
+    };
+
+    document.getElementById('loginForm').onsubmit = async (e) => {
+        e.preventDefault();
+        authError.style.display = 'none';
+        try {
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email: document.getElementById('loginEmail').value,
+                    password: document.getElementById('loginPassword').value,
+                }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('user', JSON.stringify(data.user));
+                window.location.href = '/app';
+            } else {
+                showError(data.error || 'Login failed');
+            }
+        } catch { showError('Network error'); }
+    };
+
+    document.getElementById('registerForm').onsubmit = async (e) => {
+        e.preventDefault();
+        authError.style.display = 'none';
+        authSuccess.style.display = 'none';
+        try {
+            const res = await fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: document.getElementById('regName').value,
+                    email: document.getElementById('regEmail').value,
+                    password: document.getElementById('regPassword').value,
+                }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('user', JSON.stringify(data.user));
+                showSuccess('Account created! 20 free messages added. Redirecting...');
+                setTimeout(() => { window.location.href = '/app'; }, 1500);
+            } else {
+                showError(data.error || 'Registration failed');
+            }
+        } catch { showError('Network error'); }
+    };
+
+    if (localStorage.getItem('token')) window.location.href = '/app';
+</script>
 </body>
 </html>
