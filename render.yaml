@@ -28,6 +28,6 @@ services:
       - key: ADMIN_EMAIL
         value: "piyushbhuyan71@gmail.com"
       - key: UPI_ID
-        value: "yourname@upi"
+        value: "9864854881@ptsbi"
       - key: UPI_NAME
-        value: "Your Name"
+        value: "Piyush Bhuyan"

@@ -2,13 +2,14 @@
   'use strict';
 
   function getToken() { return localStorage.getItem('token'); }
+  const API = window.API_BASE || '';
   function logout() { localStorage.removeItem('token'); localStorage.removeItem('user'); window.location.href = '/'; }
 
   if (!getToken()) { window.location.href = '/'; return; }
 
   async function api(url, opts = {}) {
     const headers = { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json', ...opts.headers };
-    const res = await fetch(url, { ...opts, headers });
+    const res = await fetch(API + url, { ...opts, headers });
     if (res.status === 401 || res.status === 403) { logout(); return null; }
     return res.json();
   }

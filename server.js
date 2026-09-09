@@ -56,6 +56,13 @@ const TX_FILE = path.join(DATA_DIR, 'transactions.json');
 // --- APP ---
 const app = express();
 app.use(express.json({ limit: '50mb' }));
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 app.use(express.static(PUBLIC_DIR));
 
 // --- DATA STORE (JSON file DB) ---
@@ -225,7 +232,7 @@ app.get('/api/me', authMiddleware, (req, res) => {
 
 // --- CREDIT TIERS ---
 app.get('/api/tiers', (req, res) => {
-  res.json({ tiers: CREDIT_TIERS, upiId: process.env.UPI_ID || 'yourname@upi', upiName: process.env.UPI_NAME || 'Your Name' });
+  res.json({ tiers: CREDIT_TIERS, upiId: process.env.UPI_ID || '9864854881@ptsbi', upiName: process.env.UPI_NAME || 'Piyush Bhuyan' });
 });
 
 // --- PURCHASE REQUEST (manual UPI) ---

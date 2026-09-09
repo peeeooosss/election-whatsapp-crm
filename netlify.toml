@@ -1,0 +1,13 @@
+[build]
+  publish = "public"
+
+# Route /app and /admin to their .html files (Netlify serves static files by path)
+[[redirects]]
+  from = "/app"
+  to = "/app.html"
+  status = 200
+
+[[redirects]]
+  from = "/admin"
+  to = "/admin.html"
+  status = 200

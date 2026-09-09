@@ -18,3 +18,9 @@ npm-debug.log*
 # OS
 .DS_Store
 dev.txt
+
+# Netlify local state (auth/site link)
+.netlify/
+
+# Netlify deploy token
+.netlify-auth.json

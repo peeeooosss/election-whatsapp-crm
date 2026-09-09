@@ -49,7 +49,9 @@
         </form>
     </div>
 </div>
-<script>
+<script src="config.js"></script>
+    <script>
+    const API = window.API_BASE || '';
     const authError = document.getElementById('authError');
     const authSuccess = document.getElementById('authSuccess');
     function showError(msg) { authError.style.display = 'block'; authError.textContent = msg; }
@@ -70,7 +72,7 @@
         e.preventDefault();
         authError.style.display = 'none';
         try {
-            const res = await fetch('/api/login', {
+            const res = await fetch(API + '/api/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -94,7 +96,7 @@
         authError.style.display = 'none';
         authSuccess.style.display = 'none';
         try {
-            const res = await fetch('/api/register', {
+            const res = await fetch(API + '/api/register', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

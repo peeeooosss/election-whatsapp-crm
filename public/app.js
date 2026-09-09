@@ -3,6 +3,7 @@
 
   const TOKEN_KEY = 'token';
   const USER_KEY = 'user';
+  const API = window.API_BASE || '';
 
   function getToken() { return localStorage.getItem(TOKEN_KEY); }
   function getUser() { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } }
@@ -12,7 +13,7 @@
 
   async function api(url, opts = {}) {
     const headers = { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json', ...opts.headers };
-    const res = await fetch(url, { ...opts, headers });
+    const res = await fetch(API + url, { ...opts, headers });
     if (res.status === 401) { logout(); return null; }
     return res.json();
   }
