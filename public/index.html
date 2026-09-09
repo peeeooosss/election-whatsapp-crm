@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Election Campaign Manager</title>
+    <!-- SheetJS for Excel Parsing -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="container">
+    <h1>🗳️ Election Campaign Bulk Sender</h1>
+
+    <!-- 1. Connection Section -->
+    <div class="card">
+        <h2>1. WhatsApp Connection</h2>
+        <p>Enter your WhatsApp number (with country code) to get a pairing code. Now showing connection status.</p>
+        <div class="conn-box">
+            <input type="text" id="phoneInput" placeholder="Enter Phone Number (e.g. 911123456789)">
+            <button onclick="requestPairingCode()">Get Pairing Code</button>
+            <div class="loader" id="connLoader"></div>
+            <span id="connStatus" class="conn-status disconnected"><span class="dot"></span> Checking...</span>
+        </div>
+        <div id="pairingCodeDisplay" class="code-display"></div>
+        <p><small>Tip: In WhatsApp, go to <strong>Settings &gt; Linked Devices &gt; Link a Device</strong> and choose <strong>Link with phone number instead</strong>.</small></p>
+    </div>
+
+    <!-- 2. File Upload & CRM -->
+    <div class="card">
+        <h2>2. Upload Voter List (Excel)</h2>
+        <input type="file" id="excelFile" accept=".xlsx, .xls" onchange="handleFileUpload()">
+
+        <div id="crmSection" style="display:none; margin-top: 20px;">
+            <div class="filters">
+                <input type="text" id="searchBox" placeholder="Search Name or Phone..." onkeyup="renderTable()">
+                <select id="filterDept" onchange="renderTable()"><option value="">All Departments</option></select>
+                <select id="filterYear" onchange="renderTable()"><option value="">All Years</option></select>
+                <span class="row-count">Showing: <span id="rowCount">0</span> voters</span>
+            </div>
+
+            <div class="table-container">
+                <table id="crmTable">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Phone</th>
+                            <th>Department</th>
+                            <th>Year</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. Message Composer -->
+    <div class="card">
+        <h2>3. Message Composer</h2>
+        <div class="composer-box">
+            <div class="tags">
+                <span>Insert Tags: </span>
+                <button class="tag-btn" onclick="insertTag('{Name}')">[+ Name]</button>
+                <button class="tag-btn" onclick="insertTag('{Department}')">[+ Dept]</button>
+                <button class="tag-btn" onclick="insertTag('{Year}')">[+ Year]</button>
+            </div>
+            <textarea id="messageTemplate" placeholder="Hello {Name}, this is a reminder for the upcoming election in {Department}..."></textarea>
+
+            <button id="startBtn" onclick="startCampaign()" style="background-color: var(--primary); font-size: 1.1em;">🚀 Start Campaign</button>
+            <div id="campaignStatus" class="status-bar"></div>
+        </div>
+    </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

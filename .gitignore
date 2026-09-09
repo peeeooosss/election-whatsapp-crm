@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# WhatsApp auth sessions
+sessions/
+/data/sessions
+
+# Environment / secrets
+.env
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+dev.txt
