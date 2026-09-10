@@ -170,7 +170,9 @@
 
   function fmtNumber(n) {
     if (!n) return '';
-    const d = String(n).replace(/\D/g, '');
+    // Drop anything after a device index (e.g. 917086606995:25) before cleaning
+    const base = String(n).split(':')[0];
+    const d = base.replace(/\D/g, '');
     // Strip leading country code (91) to show user-entered format
     const local = d.startsWith('91') && d.length > 10 ? d.slice(2) : d;
     return local;
