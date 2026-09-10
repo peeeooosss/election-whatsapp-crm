@@ -294,7 +294,7 @@ async function saveDevice(device) {
 async function loadDevice() {
   const { rows } = await pool.query('SELECT value FROM whatsapp_state WHERE key = $1', [DEVICE_KEY]);
   if (!rows.length) return null;
-  return JSON.parse(rows[0].value);
+  return rows[0].value;
 }
 
 // Clear the WhatsApp session (creds + all pairing keys) but KEEP the device
@@ -314,6 +314,8 @@ class WhatsAppManager {
     this.reconnectTimer = null;
     this.initPromise = null;
     this.pendingPair = null;
+    this.pairingWindowOpen = false; // true once the socket finishes the noise handshake and enters the pairing window (qr event)
+    this.pairingRequestInFlight = false;
   }
 
   get connected() { return this.state === 'connected' && !!this.socket; }
@@ -355,26 +357,28 @@ class WhatsAppManager {
 
   async onConnectionUpdate(update) {
     const { connection, lastDisconnect } = update;
-    if (connection === 'connecting') {
-      this.state = 'connecting';
+    if (update.qr) {
+      // The noise handshake is complete and WhatsApp is ready for pairing.
+      // This is the ONLY reliable signal that requestPairingCode will be
+      // accepted by WhatsApp's servers (the code is registered server-side).
+      this.pairingWindowOpen = true;
+      if (!this.pendingPair) return;
       const pending = this.pendingPair;
-      if (pending && this.socket) {
-        // WS is now open — this is the documented window to request a code.
-        try {
-          const code = await this.socket.requestPairingCode(pending.phoneNumber);
-          this.pendingPair = null;
-          pending.resolve(code);
-        } catch (e) {
-          this.pendingPair = null;
-          pending.reject(e);
-        }
-      }
+      this.pendingPair = null;
+      await this.performPairingRequest(pending);
+    } else if (connection === 'connecting') {
+      this.state = 'connecting';
+      // NOTE: Do NOT request a pairing code here. The 'connecting' event fires
+      // on process.nextTick before the WebSocket (and the noise handshake) is
+      // actually open, so the code would be generated locally but never
+      // registered with WhatsApp — the phone would report it as invalid.
     } else if (connection === 'open') {
       this.state = 'connected';
       console.log('[whatsapp] Connection opened successfully!');
       await this.persistDeviceIfNeeded();
     } else if (connection === 'close') {
       this.state = 'disconnected';
+      this.pairingWindowOpen = false;
       if (this.pendingPair) {
         const pending = this.pendingPair;
         this.pendingPair = null;
@@ -420,30 +424,47 @@ class WhatsAppManager {
 
   // Generate a fresh pairing code. Uses a brand-new socket so the registration
   // session is clean each time, then calls requestPairingCode only once the
-  // socket's WebSocket is genuinely open (the 'connecting' phase), which is the
-  // documented Baileys pairing window. Any dropped connection rejects the wait.
+  // socket has genuinely completed the noise handshake (signaled by Baileys'
+  // 'qr' / pairing-window update), which is the only moment WhatsApp will
+  // actually register the code server-side. Requesting earlier produces a code
+  // that the phone reports as invalid. Any dropped connection rejects the wait.
   requestPairingCode(phoneNumber) {
     return this.withFreshSocket((sock) => {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
-          this.pendingPair = null;
+          if (this.pendingPair === pair) this.pendingPair = null;
           reject(new Error('Timed out waiting for WhatsApp to be ready for pairing.'));
-        }, 40000);
-        this.pendingPair = {
+        }, 45000);
+        const pair = {
           phoneNumber,
           resolve: (code) => { clearTimeout(timer); resolve(code); },
           reject: (err) => { clearTimeout(timer); reject(err); },
         };
-        if (sock.ws && sock.ws.readyState === 1) {
-          // WS already open — request immediately.
-          sock.requestPairingCode(phoneNumber).then(
-            (c) => { const p = this.pendingPair; this.pendingPair = null; if (p) p.resolve(c); },
-            (e) => { const p = this.pendingPair; this.pendingPair = null; if (p) p.reject(e); }
-          );
+        this.pendingPair = pair;
+        if (this.pairingWindowOpen) {
+          // Already inside the pairing window — request immediately.
+          this.pendingPair = null;
+          this.performPairingRequest(pair);
         }
-        // Otherwise onConnectionUpdate('connecting') will fire the request.
+        // Otherwise onConnectionUpdate(qr) will run performPairingRequest.
       });
     });
+  }
+
+  // Actually send the requestPairingCode node on the current socket. Guarded so
+  // a qr event (and the immediate-window path above) can never double-fire.
+  async performPairingRequest(pair) {
+    if (!pair || this.pairingRequestInFlight) return;
+    this.pairingRequestInFlight = true;
+    try {
+      if (!this.socket) throw new Error('No WhatsApp socket available.');
+      const code = await this.socket.requestPairingCode(pair.phoneNumber);
+      pair.resolve(code);
+    } catch (e) {
+      pair.reject(e);
+    } finally {
+      this.pairingRequestInFlight = false;
+    }
   }
 
   // Run `fn` on a clean, brand-new socket (previous socket is ended so no stale
@@ -453,6 +474,8 @@ class WhatsAppManager {
     try { if (this.socket) this.socket.end({ newAlwaysOpen: true }); } catch {}
     this.socket = null;
     this.state = 'connecting';
+    this.pairingWindowOpen = false;
+    this.pairingRequestInFlight = false;
     await this.ensureSocket();
     if (!this.socket) throw new Error('Could not create a WhatsApp socket.');
     return await fn(this.socket);
@@ -463,6 +486,8 @@ class WhatsAppManager {
     try { if (this.socket) this.socket.end({ newAlwaysOpen: true }); } catch {}
     this.socket = null;
     this.state = 'connecting';
+    this.pairingWindowOpen = false;
+    this.pairingRequestInFlight = false;
     await this.ensureSocket();
     return this.state;
   }
@@ -717,16 +742,9 @@ app.post('/api/request-code', authMiddleware, async (req, res) => {
   try {
     // Fresh pairing always starts from clean creds (removes any stale session).
     await clearSessionKeys();
-    let cleanNumber = String(phoneNumber).replace(/\D/g, '');
-    if (cleanNumber.startsWith('0')) cleanNumber = cleanNumber.slice(1);
-    if (cleanNumber.length === 10) {
-      cleanNumber = DEFAULT_COUNTRY_CODE + cleanNumber;
-    } else if (!cleanNumber.startsWith(DEFAULT_COUNTRY_CODE)) {
-      cleanNumber = DEFAULT_COUNTRY_CODE + cleanNumber;
-    }
-    cleanNumber = cleanNumber.slice(0, 13);
-    if (cleanNumber.length < 11) {
-      throw new Error('Invalid phone number length.');
+    const cleanNumber = cleanPhoneNumber(phoneNumber);
+    if (!cleanNumber) {
+      throw new Error('Invalid phone number.');
     }
 
     // Generate the code only after the socket is actually connected to
@@ -743,7 +761,15 @@ app.post('/api/request-code', authMiddleware, async (req, res) => {
       linkedAt: new Date().toISOString(),
     };
     await saveDevice(wa.device);
-    res.json({ success: true, code, number: cleanNumber });
+    const expected = cleanPhoneNumber(ADMIN_WHATSAPP);
+    res.json({
+      success: true,
+      code,
+      number: cleanNumber,
+      warning: (expected && expected !== cleanNumber)
+        ? `This code will only link the WhatsApp account for ${cleanNumber}. It will NOT link the config number ${expected}. Make sure ${cleanNumber} is the number shown in the phone's WhatsApp Settings.`
+        : undefined,
+    });
   } catch (error) {
     const msg = (error && error.message) || '';
     console.error('[whatsapp] Error requesting pairing code:', error);
