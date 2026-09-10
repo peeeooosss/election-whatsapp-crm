@@ -37,6 +37,10 @@
     <div class="card">
         <h2>Upload Voter List (Excel)</h2>
         <input type="file" id="fileInput" accept=".xlsx,.xls" style="margin-bottom:12px;">
+        <div style="margin-bottom:12px; font-size:0.9em;">
+            <button type="button" class="btn btn-secondary" id="loadDemoBtn" style="width:auto; margin-right:8px;">📥 Load Demo Data</button>
+            <a href="demo-voters.xlsx" download style="font-size:0.85em;">Download demo-voters.xlsx</a>
+        </div>
         <div id="crmSection" style="display:none;">
             <div class="filters">
                 <input type="text" id="crmSearch" placeholder="Search Name or Phone..." oninput="window._crmRender && window._crmRender()" style="flex:1; min-width:200px;">
