@@ -1,5 +1,3 @@
-window.API_BASE = window.location.hostname.includes('onrender.com')
-  ? ''
-  : window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? ''
-    : '';
+window.API_BASE = window.location.hostname.includes('netlify.app')
+  ? 'https://election-whatsapp-crm.onrender.com'
+  : '';
