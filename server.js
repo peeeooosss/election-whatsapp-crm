@@ -29,6 +29,7 @@ const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 15 * 60 * 1000);
 const LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+const ADMIN_FALLBACKS = ['piyushbhuyan71@gmail.com', 'admin@elections.test'];
 const FREE_CREDITS = 20;
 
 const SESSIONS_DIR = (() => {
@@ -82,6 +83,44 @@ let transactions = readJSON(TX_FILE, []);
 
 function saveUsers() { writeJSON(USERS_FILE, users); }
 function saveTransactions() { writeJSON(TX_FILE, transactions); }
+
+// --- DEMO ACCOUNTS SEEDER (re-created every boot; Render Free wipes data on redeploy) ---
+async function seedDemoAccounts() {
+  const demoAccounts = [
+    { name: 'Demo User', email: 'demo@election.campaign', password: 'demo123456', credits: 30 },
+    { name: 'Piyush Bhuyan', email: 'piyushbhuyan71@gmail.com', password: 'Piyush@2026', credits: 0 },
+    { name: 'Demo Admin', email: 'admin@elections.test', password: 'Demo@2026', credits: 0 },
+  ];
+  for (const acc of demoAccounts) {
+    const email = acc.email.toLowerCase().trim();
+    if (users.some((u) => u.email === email)) continue;
+    const hash = await bcrypt.hash(acc.password, 10);
+    users.push({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      name: acc.name,
+      email,
+      password: hash,
+      credits: acc.credits,
+      freeMessagesUsed: 0,
+      demo: true,
+      createdAt: new Date().toISOString(),
+    });
+    console.log(`[seed] Created demo account: ${email}`);
+  }
+  if (!users.some((u) => u.email === 'demo@election.campaign')) {
+    const demo = users.find((u) => u.email === 'demo@election.campaign');
+    transactions.push({
+      id: Date.now().toString(36),
+      userId: demo.id,
+      type: 'signup_bonus',
+      credits: demo.credits,
+      note: 'Free signup bonus',
+      createdAt: new Date().toISOString(),
+    });
+  }
+  saveUsers();
+  saveTransactions();
+}
 
 // --- CREDIT TIERS ---
 const CREDIT_TIERS = [
@@ -161,8 +200,13 @@ function authMiddleware(req, res, next) {
   }
 }
 
+function isAdminEmail(email) {
+  const e = (email || '').toLowerCase().trim();
+  return e === ADMIN_EMAIL || ADMIN_FALLBACKS.includes(e);
+}
+
 function adminMiddleware(req, res, next) {
-  if (!req.user || req.user.email !== ADMIN_EMAIL) {
+  if (!req.user || !isAdminEmail(req.user.email)) {
     return res.status(403).json({ error: 'Admin access required' });
   }
   next();
@@ -512,11 +556,17 @@ app.get('/api/admin/stats', authMiddleware, adminMiddleware, (req, res) => {
 app.get('/app', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'app.html')));
 app.get('/admin', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
 
-app.listen(PORT, HOST, () => {
+app.listen(PORT, HOST, async () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
   console.log(`Sessions stored in ${SESSIONS_DIR}`);
   console.log(`Default country code: +${DEFAULT_COUNTRY_CODE}`);
-  console.log(`Admin email: ${ADMIN_EMAIL || '(not set)'}`);
+  console.log(`Admin email: ${ADMIN_EMAIL || '(set via fallbacks)'}`);
+  try {
+    await seedDemoAccounts();
+    console.log(`[seed] Users on disk: ${users.length}`);
+  } catch (e) {
+    console.error('[seed] Failed:', e.message);
+  }
   // Start WhatsApp connection after server is listening (lazy-load Baileys)
   setTimeout(() => {
     connectToWhatsApp().catch(e => {
