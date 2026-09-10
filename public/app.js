@@ -79,12 +79,15 @@
     if (!phone) return alert('Enter phone number');
     getPairingBtn.disabled = true;
     getPairingBtn.textContent = 'Generating...';
+    pairingCodeDisplay.style.display = 'none';
     try {
       const data = await api('/api/request-code', { method: 'POST', body: JSON.stringify({ phoneNumber: phone }) });
       if (data && data.success && data.code) {
-        pairingCodeDisplay.textContent = data.code;
+        const num = data.number ? fmtNumber(data.number) : '';
+        pairingCodeDisplay.innerHTML = `<div style="font-size:0.4em;letter-spacing:1px;color:#718096;">Pairing code for ${num || phone}</div>${data.code}<div id="codeCountdown" style="font-size:0.35em;letter-spacing:1px;color:#e67e22;margin-top:6px;"></div>`;
         pairingCodeDisplay.style.display = 'block';
-        alert('Code generated! Enter this code in WhatsApp > Linked Devices > Link with phone number.');
+        alert(`Code generated for ${num || phone}! Enter it in WhatsApp within 2 minutes: WhatsApp > Linked Devices > Link with phone number.`);
+        startCodeCountdown(120);
       } else if (data && data.linkedByEmail) {
         alert(`This number is linked to ${data.linkedByEmail}. Only the original linker (or admin) can re-pair.`);
       } else {
@@ -94,6 +97,22 @@
     getPairingBtn.disabled = false;
     getPairingBtn.textContent = 'Get Pairing Code';
   };
+
+  function startCodeCountdown(seconds) {
+    const el = document.getElementById('codeCountdown');
+    if (!el) return;
+    const tick = () => {
+      if (seconds <= 0) {
+        el.textContent = 'Code expired — click "Get Pairing Code" to generate a new one.';
+        el.style.color = 'var(--danger,#e74c3c)';
+        return;
+      }
+      el.textContent = `${seconds}s remaining to enter the code on your phone`;
+      seconds -= 1;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }
 
   const reconnectBtn = document.getElementById('reconnectBtn');
   const disconnectBtn = document.getElementById('disconnectBtn');
@@ -124,6 +143,8 @@
       const data = await api('/api/disconnect', { method: 'POST' });
       if (data && data.success) {
         alert('Disconnected. Generate a new pairing code to link again.');
+        phoneInput.value = '';
+        pairingCodeDisplay.style.display = 'none';
       } else {
         alert(data?.error || 'Disconnect failed');
       }
@@ -148,6 +169,9 @@
       if (!data) return;
       const num = data.deviceNumber ? fmtNumber(data.deviceNumber) : '';
       const linkedByYou = data.linkedByEmail && data.linkedByEmail.toLowerCase() === userEmail.toLowerCase();
+      if (num && !phoneInput.value.trim() && linkedByYou) {
+        phoneInput.value = data.deviceNumber;
+      }
 
       if (data.connected) {
         connStatus.className = 'conn-status connected';

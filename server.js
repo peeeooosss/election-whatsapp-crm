@@ -27,6 +27,7 @@ const WARMUP_MIN_DELAY_MS = Number(process.env.WARMUP_MIN_DELAY_MS || 45000);
 const WARMUP_MAX_DELAY_MS = Number(process.env.WARMUP_MAX_DELAY_MS || 60000);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);
 const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 15 * 60 * 1000);
+const DAILY_MAX_MSG = Number(process.env.DAILY_MAX_MSG || 600);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
 const ADMIN_FALLBACKS = ['piyushbhuyan71@gmail.com'];
@@ -312,6 +313,7 @@ class WhatsAppManager {
     this.device = null;          // { number, linkedByUserId, linkedByEmail, linkedAt } persisted in DB
     this.reconnectTimer = null;
     this.initPromise = null;
+    this.pendingPair = null;
   }
 
   get connected() { return this.state === 'connected' && !!this.socket; }
@@ -355,16 +357,34 @@ class WhatsAppManager {
     const { connection, lastDisconnect } = update;
     if (connection === 'connecting') {
       this.state = 'connecting';
+      const pending = this.pendingPair;
+      if (pending && this.socket) {
+        // WS is now open — this is the documented window to request a code.
+        try {
+          const code = await this.socket.requestPairingCode(pending.phoneNumber);
+          this.pendingPair = null;
+          pending.resolve(code);
+        } catch (e) {
+          this.pendingPair = null;
+          pending.reject(e);
+        }
+      }
     } else if (connection === 'open') {
       this.state = 'connected';
       console.log('[whatsapp] Connection opened successfully!');
       await this.persistDeviceIfNeeded();
     } else if (connection === 'close') {
       this.state = 'disconnected';
+      if (this.pendingPair) {
+        const pending = this.pendingPair;
+        this.pendingPair = null;
+        pending.reject(new Error('WhatsApp connection dropped while generating the pairing code.'));
+      }
+      const closedSock = this.socket;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const isLoggedOut = statusCode === this.DisconnectReason?.loggedOut;
       console.log(`[whatsapp] Connection closed (status ${statusCode}). Logged out: ${isLoggedOut}`);
-      if (this.socket) this.socket = null;
+      if (this.socket === closedSock) this.socket = null;
       if (isLoggedOut) {
         this.state = 'logged_out';
         // Keep the device record (so only the linker can re-pair) but drop the
@@ -372,9 +392,11 @@ class WhatsAppManager {
         await clearSessionKeys();
         return;
       }
+      // Guard against a stale timer: only auto-reconnect if no newer socket has
+      // been created in the meantime (e.g. a fresh pairing socket).
       this.reconnectTimer = setTimeout(() => {
+        if (this.socket !== null) return;  // a newer socket already exists
         console.log('[whatsapp] Reconnecting...');
-        this.socket = null;
         this.ensureSocket().catch((e) => console.error('[whatsapp] Reconnect error:', e.message));
       }, 3000);
     }
@@ -396,6 +418,46 @@ class WhatsAppManager {
     }
   }
 
+  // Generate a fresh pairing code. Uses a brand-new socket so the registration
+  // session is clean each time, then calls requestPairingCode only once the
+  // socket's WebSocket is genuinely open (the 'connecting' phase), which is the
+  // documented Baileys pairing window. Any dropped connection rejects the wait.
+  requestPairingCode(phoneNumber) {
+    return this.withFreshSocket((sock) => {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pendingPair = null;
+          reject(new Error('Timed out waiting for WhatsApp to be ready for pairing.'));
+        }, 40000);
+        this.pendingPair = {
+          phoneNumber,
+          resolve: (code) => { clearTimeout(timer); resolve(code); },
+          reject: (err) => { clearTimeout(timer); reject(err); },
+        };
+        if (sock.ws && sock.ws.readyState === 1) {
+          // WS already open — request immediately.
+          sock.requestPairingCode(phoneNumber).then(
+            (c) => { const p = this.pendingPair; this.pendingPair = null; if (p) p.resolve(c); },
+            (e) => { const p = this.pendingPair; this.pendingPair = null; if (p) p.reject(e); }
+          );
+        }
+        // Otherwise onConnectionUpdate('connecting') will fire the request.
+      });
+    });
+  }
+
+  // Run `fn` on a clean, brand-new socket (previous socket is ended so no stale
+  // registration/session interferes with re-pairing).
+  async withFreshSocket(fn) {
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    try { if (this.socket) this.socket.end({ newAlwaysOpen: true }); } catch {}
+    this.socket = null;
+    this.state = 'connecting';
+    await this.ensureSocket();
+    if (!this.socket) throw new Error('Could not create a WhatsApp socket.');
+    return await fn(this.socket);
+  }
+
   // Force a brand-new socket (used by the Reconnect button and cold starts).
   async reconnect() {
     try { if (this.socket) this.socket.end({ newAlwaysOpen: true }); } catch {}
@@ -409,6 +471,11 @@ class WhatsAppManager {
   // (creds/keys). The device record is kept so only the linker can re-pair.
   async disconnect() {
     this.state = 'logged_out';
+    if (this.pendingPair) {
+      const pending = this.pendingPair;
+      this.pendingPair = null;
+      pending.reject(new Error('Disconnected.'));
+    }
     try { if (this.socket) await this.socket.logout(); } catch {}
     this.socket = null;
     await clearSessionKeys();
@@ -426,17 +493,29 @@ async function ensureWhatsApp() {
 }
 
 // --- PHONE NORMALIZER ---
-// Handles: 10-digit local (e.g. 7086606995 OR 9132360520 — a local number that HAPPENS to start with 91),
-// 12-digit already-coded (919132360520), and plain international digits.
-function normalizePhone(input) {
+// Returns just the digits (no '@s.whatsapp.net'), normalizing common inputs:
+//   10-digit local       -> 9876543210        -> 919876543210
+//   leading-zero local   -> 09876543210       -> 919876543210
+//   0 + intl             -> 0919876543210     -> 919876543210
+//   already coded        -> 919876543210      -> 919876543210
+//   plain international  -> 9876543210 given CC 91 -> 919876543210
+function cleanPhoneNumber(input) {
   let digits = String(input || '').replace(/\D/g, '');
   if (!digits) return null;
+  if (digits.startsWith('00')) digits = digits.slice(2);    // international escape
+  if (digits.startsWith('0')) digits = digits.slice(1);     // drop leading 0
   if (digits.length === 10) {
-    digits = DEFAULT_COUNTRY_CODE + digits; // always prefix for 10-digit numbers
+    digits = DEFAULT_COUNTRY_CODE + digits;                 // always prefix for local
   } else if (!digits.startsWith(DEFAULT_COUNTRY_CODE)) {
     digits = DEFAULT_COUNTRY_CODE + digits;
   }
-  return digits.slice(0, 13) + '@s.whatsapp.net';
+  digits = digits.slice(0, 13);
+  return digits.length >= 11 ? digits : null;
+}
+
+function normalizePhone(input) {
+  const digits = cleanPhoneNumber(input);
+  return digits ? digits + '@s.whatsapp.net' : null;
 }
 
 // --- AUTH MIDDLEWARE ---
@@ -638,17 +717,21 @@ app.post('/api/request-code', authMiddleware, async (req, res) => {
   try {
     // Fresh pairing always starts from clean creds (removes any stale session).
     await clearSessionKeys();
-    // Ensure a socket exists (initializing lazily) before requesting a code.
-    await wa.ensureSocket();
-    if (!wa.socket) {
-      // Socket init failed — retry once from scratch.
-      await wa.reconnect();
-    }
     let cleanNumber = String(phoneNumber).replace(/\D/g, '');
+    if (cleanNumber.startsWith('0')) cleanNumber = cleanNumber.slice(1);
     if (cleanNumber.length === 10) {
       cleanNumber = DEFAULT_COUNTRY_CODE + cleanNumber;
+    } else if (!cleanNumber.startsWith(DEFAULT_COUNTRY_CODE)) {
+      cleanNumber = DEFAULT_COUNTRY_CODE + cleanNumber;
     }
-    const code = await wa.socket.requestPairingCode(cleanNumber);
+    cleanNumber = cleanNumber.slice(0, 13);
+    if (cleanNumber.length < 11) {
+      throw new Error('Invalid phone number length.');
+    }
+
+    // Generate the code only after the socket is actually connected to
+    // WhatsApp's servers — otherwise the code is silently never registered.
+    const code = await wa.requestPairingCode(cleanNumber);
     console.log(`[whatsapp] Pairing code generated for ${cleanNumber} by ${req.user.email}`);
     // Pin this number to the requesting user so only they can re-pair.
     wa.linkedByUserId = req.user.id;
@@ -660,10 +743,15 @@ app.post('/api/request-code', authMiddleware, async (req, res) => {
       linkedAt: new Date().toISOString(),
     };
     await saveDevice(wa.device);
-    res.json({ success: true, code });
+    res.json({ success: true, code, number: cleanNumber });
   } catch (error) {
+    const msg = (error && error.message) || '';
     console.error('[whatsapp] Error requesting pairing code:', error);
-    res.status(500).json({ error: 'Failed to generate pairing code. Check the number.' });
+    res.status(500).json({
+      error: /connection|timed out/i.test(msg)
+        ? 'Could not reach WhatsApp servers. Try again in a few seconds.'
+        : 'Failed to generate pairing code. Check the number and try again.',
+    });
   }
 });
 
@@ -722,6 +810,22 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
       error: `Insufficient credits. You have ${user.credits} credits but need ${list.length}. Buy more credits to continue.`,
       credits: user.credits,
       needed: list.length,
+    });
+  }
+
+  // Daily cap per linked number (safety limit to avoid WhatsApp flagging the SIM).
+  const sinceToday = new Date();
+  sinceToday.setHours(0, 0, 0, 0);
+  const todayCount = await pool.query(
+    `SELECT COALESCE(SUM(sent + failed), 0)::int AS n FROM campaigns WHERE user_id = $1 AND started_at >= $2`,
+    [user.id, sinceToday.toISOString()]
+  );
+  const sentToday = todayCount.rows[0]?.n || 0;
+  if (sentToday + list.length > DAILY_MAX_MSG) {
+    return res.status(429).json({
+      error: `Daily limit reached (${DAILY_MAX_MSG} messages per day). Already sent ${sentToday} today.`,
+      sentToday,
+      limit: DAILY_MAX_MSG,
     });
   }
 

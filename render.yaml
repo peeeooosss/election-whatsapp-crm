@@ -29,6 +29,8 @@ services:
         value: "50"
       - key: BATCH_PAUSE_MS
         value: "900000"
+      - key: DAILY_MAX_MSG
+        value: "600"
       - key: LOG_LEVEL
         value: "silent"
       - key: JWT_SECRET
