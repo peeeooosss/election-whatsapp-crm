@@ -88,7 +88,9 @@
             } else {
                 showError(data.error || 'Login failed');
             }
-        } catch { showError('Network error'); }
+        } catch (err) {
+            showError('Server unreachable — it may be waking up. Try again in 30s.');
+        }
     };
 
     document.getElementById('registerForm').onsubmit = async (e) => {
@@ -114,7 +116,9 @@
             } else {
                 showError(data.error || 'Registration failed');
             }
-        } catch { showError('Network error'); }
+        } catch (err) {
+            showError('Server unreachable — it may be waking up. Try again in 30s.');
+        }
     };
 
     if (localStorage.getItem('token')) window.location.href = '/app';

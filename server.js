@@ -1185,6 +1185,12 @@ app.get('/api/admin/stats', authMiddleware, adminMiddleware, async (req, res) =>
 app.get('/app', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'app.html')));
 app.get('/admin', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
 
+// Global error handler — return JSON so the frontend never sees a bare error page
+app.use((err, req, res, next) => {
+  console.error('[api] Unhandled error:', err.message);
+  res.status(500).json({ error: 'Server error — try again in a moment.' });
+});
+
 app.listen(PORT, HOST, async () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
   console.log(`Default country code: +${DEFAULT_COUNTRY_CODE}`);
