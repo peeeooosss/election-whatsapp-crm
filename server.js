@@ -1,9 +1,9 @@
 const express = require('express');
 const path = require('path');
 const dotenv = require('dotenv');
-const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { Pool } = require('pg');
 
 dotenv.config();
 
@@ -16,48 +16,104 @@ function baileys() {
   return _baileys;
 }
 
-dotenv.config();
-
 // --- CONFIG ---
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
 const DEFAULT_COUNTRY_CODE = String(process.env.DEFAULT_COUNTRY_CODE || '91');
-const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 30000);
-const MAX_DELAY_MS = Number(process.env.MAX_DELAY_MS || 55000);
+const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 20000);
+const MAX_DELAY_MS = Number(process.env.MAX_DELAY_MS || 35000);
+const WARMUP_SEND_COUNT = Number(process.env.WARMUP_SEND_COUNT || 15);
+const WARMUP_MIN_DELAY_MS = Number(process.env.WARMUP_MIN_DELAY_MS || 45000);
+const WARMUP_MAX_DELAY_MS = Number(process.env.WARMUP_MAX_DELAY_MS || 60000);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);
 const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 15 * 60 * 1000);
-const LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
-const ADMIN_FALLBACKS = ['piyushbhuyan71@gmail.com', 'admin@elections.test'];
+const ADMIN_FALLBACKS = ['piyushbhuyan71@gmail.com'];
 const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || '9864854881';
-const FREE_CREDITS = 20;
-const PRICE_PER_MSG = 0.4;   // ₹0.40 per message
-const MIN_QTY = 100;
-const MAX_QTY = 1000;
+const FREE_CREDITS = Number(process.env.FREE_CREDITS || 50);
+const PRICE_PER_MSG = Number(process.env.PRICE_PER_MSG || 0.4);   // ₹0.40 per message
+const MIN_QTY = Number(process.env.MIN_QTY || 100);
+const MAX_QTY = Number(process.env.MAX_QTY || 1000);
 
-const SESSIONS_DIR = (() => {
-  if (process.env.SESSIONS_DIR) {
-    const resolved = path.resolve(process.env.SESSIONS_DIR);
-    try {
-      if (!fs.existsSync(resolved)) fs.mkdirSync(resolved, { recursive: true });
-      return resolved;
-    } catch {
-      console.warn('[startup] SESSIONS_DIR not writable, falling back to local ./sessions');
-    }
-  }
-  const local = path.join(__dirname, 'sessions');
-  if (!fs.existsSync(local)) fs.mkdirSync(local, { recursive: true });
-  return local;
-})();
+// --- DATABASE (Neon Postgres) ---
+const DATABASE_URL = (process.env.DATABASE_URL || '').trim();
+if (!DATABASE_URL) {
+  console.error('[db] DATABASE_URL is required. Set it in .env (Neon Postgres connection string).');
+  process.exit(1);
+}
+// Strip pg-unsupported params (channel_binding) from the Neon URL.
+const dbUrl = DATABASE_URL
+  .replace(/channel_binding=[^&]*&?/, '')
+  .replace(/[?&]$/, '');
 
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const pool = new Pool({
+  connectionString: dbUrl,
+  ssl: { rejectUnauthorized: false },
+  connectionTimeoutMillis: 10000,
+  max: 4,
+});
+
+pool.on('error', (err) => {
+  console.error('[db] Unexpected pool error:', err.message);
+});
+
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      credits INTEGER NOT NULL DEFAULT 0,
+      free_messages_used INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      credits INTEGER NOT NULL DEFAULT 0,
+      price INTEGER,
+      label TEXT,
+      note TEXT,
+      status TEXT,
+      user_name TEXT,
+      user_email TEXT,
+      approved_at TIMESTAMPTZ,
+      approved_by TEXT,
+      rejected_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id, created_at DESC)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      message TEXT,
+      results JSONB NOT NULL DEFAULT '[]'::jsonb,
+      sent INTEGER NOT NULL DEFAULT 0,
+      failed INTEGER NOT NULL DEFAULT 0,
+      refunded INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL DEFAULT 0,
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_user ON campaigns(user_id, finished_at DESC)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS whatsapp_state (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL
+    )
+  `);
+  console.log('[db] Schema ready (Postgres).');
+}
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const TX_FILE = path.join(DATA_DIR, 'transactions.json');
-const CAMPAIGNS_FILE = path.join(DATA_DIR, 'campaigns.json');
 
 // --- APP ---
 const app = express();
@@ -71,65 +127,76 @@ app.use((req, res, next) => {
 });
 app.use(express.static(PUBLIC_DIR));
 
-// --- DATA STORE (JSON file DB) ---
-function readJSON(file, fallback) {
-  try {
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch { /* ignore corrupt file */ }
-  return fallback;
+// --- USER / TX / CAMPAIGN MAPPERS (snake_case columns -> API camelCase) ---
+const mapUser = (r) => r && ({
+  id: r.id,
+  name: r.name,
+  email: r.email,
+  password: r.password,
+  credits: r.credits,
+  freeMessagesUsed: r.free_messages_used,
+  createdAt: r.created_at,
+});
+
+const mapTx = (r) => r && ({
+  id: r.id,
+  userId: r.user_id,
+  userName: r.user_name,
+  userEmail: r.user_email,
+  type: r.type,
+  credits: r.credits,
+  price: r.price,
+  label: r.label,
+  note: r.note,
+  status: r.status,
+  approvedAt: r.approved_at,
+  approvedBy: r.approved_by,
+  rejectedAt: r.rejected_at,
+  createdAt: r.created_at,
+});
+
+const mapCampaign = (r) => r && ({
+  id: r.id,
+  userId: r.user_id,
+  message: r.message,
+  results: r.results,
+  sent: r.sent,
+  failed: r.failed,
+  refunded: r.refunded,
+  total: r.total,
+  startedAt: r.started_at,
+  finishedAt: r.finished_at,
+});
+
+async function getUserById(id) {
+  const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+  return mapUser(rows[0]);
 }
 
-function writeJSON(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+async function getUserByEmail(email) {
+  const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+  return mapUser(rows[0]);
 }
 
-let users = readJSON(USERS_FILE, []);
-let transactions = readJSON(TX_FILE, []);
-let campaigns = readJSON(CAMPAIGNS_FILE, []);
-
-function saveUsers() { writeJSON(USERS_FILE, users); }
-function saveTransactions() { writeJSON(TX_FILE, transactions); }
-function saveCampaigns() { writeJSON(CAMPAIGNS_FILE, campaigns); }
-
-// --- DEMO ACCOUNTS SEEDER (re-created every boot; Render Free wipes data on redeploy) ---
-async function seedDemoAccounts() {
-  const demoAccounts = [
-    { name: 'Demo User', email: 'demo@election.campaign', password: 'demo123456', credits: 30 },
-    { name: 'Piyush Bhuyan', email: 'piyushbhuyan71@gmail.com', password: 'Piyush@2026', credits: 0 },
-    { name: 'Demo Admin', email: 'admin@elections.test', password: 'Demo@2026', credits: 0 },
-  ];
-  for (const acc of demoAccounts) {
-    const email = acc.email.toLowerCase().trim();
-    if (users.some((u) => u.email === email)) continue;
-    const hash = await bcrypt.hash(acc.password, 10);
-    users.push({
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-      name: acc.name,
-      email,
-      password: hash,
-      credits: acc.credits,
-      freeMessagesUsed: 0,
-      demo: true,
-      createdAt: new Date().toISOString(),
-    });
-    console.log(`[seed] Created demo account: ${email}`);
-  }
-  if (!users.some((u) => u.email === 'demo@election.campaign')) {
-    const demo = users.find((u) => u.email === 'demo@election.campaign');
-    transactions.push({
-      id: Date.now().toString(36),
-      userId: demo.id,
-      type: 'signup_bonus',
-      credits: demo.credits,
-      note: 'Free signup bonus',
-      createdAt: new Date().toISOString(),
-    });
-  }
-  saveUsers();
-  saveTransactions();
+async function getUserCredits(id) {
+  const { rows } = await pool.query('SELECT credits FROM users WHERE id = $1', [id]);
+  return rows[0] ? rows[0].credits : null;
 }
 
-// CREDIT pricing: see PRICE_PER_MSG / MIN_QTY / MAX_QTY in CONFIG above.
+async function insertTransaction(tx) {
+  await pool.query(
+    `INSERT INTO transactions
+      (id, user_id, type, credits, price, label, note, status, user_name, user_email, approved_at, approved_by, rejected_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [tx.id, tx.userId, tx.type, tx.credits, tx.price, tx.label, tx.note, tx.status, tx.userName, tx.userEmail, tx.approvedAt, tx.approvedBy, tx.rejectedAt]
+  );
+}
+
+// Increase/refund a user's credits atomically.
+async function adjustCredits(userId, delta) {
+  const { rows } = await pool.query('UPDATE users SET credits = credits + $2 WHERE id = $1 RETURNING credits', [userId, delta]);
+  return rows[0] ? rows[0].credits : null;
+}
 
 // --- WHATSAPP SOCKET ---
 let sock = null;
@@ -151,10 +218,77 @@ let whatsAppConnected = false;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Postgres-backed Baileys auth state: pairing survives Render redeploys.
+async function usePostgresAuthState() {
+  const { initAuthCreds, BufferJSON } = baileys();
+  const protoModule = require('@whiskeysockets/baileys/WAProto/index.js');
+  const proto = protoModule.proto || protoModule.default.proto;
+
+  const readBuf = (parsed) => {
+    // pg returns JSONB already parsed; re-run through BufferJSON.reviver to restore Buffers.
+    if (parsed === null || parsed === undefined) return null;
+    return JSON.parse(JSON.stringify(parsed), BufferJSON.reviver);
+  };
+
+  const readData = async (key) => {
+    const { rows } = await pool.query('SELECT value FROM whatsapp_state WHERE key = $1', [key]);
+    return rows.length ? readBuf(rows[0].value) : null;
+  };
+
+  const writeData = async (key, data) => {
+    await pool.query(
+      'INSERT INTO whatsapp_state (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+      [key, JSON.stringify(data, BufferJSON.replacer)]
+    );
+  };
+
+  const removeData = async (key) => {
+    await pool.query('DELETE FROM whatsapp_state WHERE key = $1', [key]);
+  };
+
+  const creds = (await readData('creds.json')) || initAuthCreds();
+
+  return {
+    state: {
+      creds,
+      keys: {
+        get: async (type, ids) => {
+          const data = {};
+          if (!ids || !ids.length) return data;
+          const keys = ids.map((id) => `${type}-${id}.json`);
+          const { rows } = await pool.query('SELECT key, value FROM whatsapp_state WHERE key = ANY($1)', [keys]);
+          const byKey = {};
+          for (const row of rows) byKey[row.key] = readBuf(row.value);
+          for (const id of ids) {
+            let value = byKey[`${type}-${id}.json`] || null;
+            if (type === 'app-state-sync-key' && value) {
+              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
+            data[id] = value;
+          }
+          return data;
+        },
+        set: async (data) => {
+          const tasks = [];
+          for (const category in data) {
+            for (const id in data[category]) {
+              const value = data[category][id];
+              const key = `${category}-${id}.json`;
+              tasks.push(value ? writeData(key, value) : removeData(key));
+            }
+          }
+          await Promise.all(tasks);
+        },
+      },
+    },
+    saveCreds: () => writeData('creds.json', creds),
+  };
+}
+
 async function connectToWhatsApp() {
-  const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = baileys();
+  const { default: makeWASocket, DisconnectReason, Browsers } = baileys();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  const { state, saveCreds } = await useMultiFileAuthState(SESSIONS_DIR);
+  const { state, saveCreds } = await usePostgresAuthState();
   const newSock = makeWASocket({
     printQRInTerminal: false,
     auth: state,
@@ -174,7 +308,7 @@ async function connectToWhatsApp() {
     } else if (connection === 'open') {
       whatsAppConnected = true;
       console.log('[whatsapp] Connection opened successfully!');
-}
+    }
   });
 }
 
@@ -193,14 +327,14 @@ function normalizePhone(input) {
 }
 
 // --- AUTH MIDDLEWARE ---
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Authentication required' });
   }
   try {
     const decoded = jwt.verify(header.split(' ')[1], JWT_SECRET);
-    const user = users.find((u) => u.id === decoded.userId);
+    const user = await getUserById(decoded.userId);
     if (!user) return res.status(401).json({ error: 'User not found' });
     req.user = user;
     next();
@@ -230,7 +364,8 @@ app.post('/api/register', async (req, res) => {
   if (password.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
-  const existing = users.find((u) => u.email === email.toLowerCase().trim());
+  const cleanEmail = email.toLowerCase().trim();
+  const existing = await getUserByEmail(cleanEmail);
   if (existing) {
     return res.status(409).json({ error: 'Email already registered' });
   }
@@ -238,24 +373,25 @@ app.post('/api/register', async (req, res) => {
   const user = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
     name: name.trim(),
-    email: email.toLowerCase().trim(),
+    email: cleanEmail,
     password: hash,
     credits: FREE_CREDITS,
     freeMessagesUsed: 0,
     createdAt: new Date().toISOString(),
   };
-  users.push(user);
-  saveUsers();
-
-  transactions.push({
+  await pool.query(
+    'INSERT INTO users (id, name, email, password, credits, free_messages_used) VALUES ($1,$2,$3,$4,$5,$6)',
+    [user.id, user.name, user.email, user.password, user.credits, user.freeMessagesUsed]
+  );
+  await insertTransaction({
     id: Date.now().toString(36),
     userId: user.id,
     type: 'signup_bonus',
     credits: FREE_CREDITS,
     note: 'Free signup bonus',
+    status: 'completed',
     createdAt: new Date().toISOString(),
   });
-  saveTransactions();
 
   const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '30d' });
   res.json({ success: true, token, user: { id: user.id, name: user.name, email: user.email, credits: user.credits } });
@@ -266,7 +402,7 @@ app.post('/api/login', async (req, res) => {
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
   }
-  const user = users.find((u) => u.email === email.toLowerCase().trim());
+  const user = await getUserByEmail(email.toLowerCase().trim());
   if (!user) {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
@@ -296,9 +432,9 @@ app.get('/api/tiers', (req, res) => {
 });
 
 // --- PURCHASE REQUEST (manual UPI; admin credits user after payment) ---
-app.post('/api/purchase', authMiddleware, (req, res) => {
+app.post('/api/purchase', authMiddleware, async (req, res) => {
   const quantity = parseInt((req.body || {}).quantity, 10);
-  if (!Number.isFinite(quantity) || Number.isInteger(quantity) === false) {
+  if (!Number.isInteger(quantity)) {
     return res.status(400).json({ error: `Select a quantity between ${MIN_QTY} and ${MAX_QTY} messages.` });
   }
   if (quantity < MIN_QTY || quantity > MAX_QTY) {
@@ -317,8 +453,7 @@ app.post('/api/purchase', authMiddleware, (req, res) => {
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
-  transactions.push(tx);
-  saveTransactions();
+  await insertTransaction(tx);
   res.json({
     success: true,
     transactionId: tx.id,
@@ -332,31 +467,31 @@ app.post('/api/purchase', authMiddleware, (req, res) => {
 });
 
 // --- CREDIT HISTORY ---
-app.get('/api/credits/history', authMiddleware, (req, res) => {
-  const userTx = transactions
-    .filter((t) => t.userId === req.user.id)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 50);
-  res.json({ transactions: userTx });
+app.get('/api/credits/history', authMiddleware, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT * FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50',
+    [req.user.id]
+  );
+  res.json({ transactions: rows.map(mapTx) });
 });
 
 // --- MESSAGE HISTORY (what the user sent) ---
-app.get('/api/history', authMiddleware, (req, res) => {
-  const userCampaigns = campaigns
-    .filter((c) => c.userId === req.user.id)
-    .sort((a, b) => new Date(b.finishedAt) - new Date(a.finishedAt))
-    .slice(0, 50)
-    .map((c) => ({
-      id: c.id,
-      message: c.message,
-      sent: c.sent,
-      failed: c.failed,
-      refunded: c.refunded,
-      total: c.total,
-      startedAt: c.startedAt,
-      finishedAt: c.finishedAt,
-      results: c.results,
-    }));
+app.get('/api/history', authMiddleware, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT * FROM campaigns WHERE user_id = $1 ORDER BY finished_at DESC LIMIT 50',
+    [req.user.id]
+  );
+  const userCampaigns = rows.map(mapCampaign).map((c) => ({
+    id: c.id,
+    message: c.message,
+    sent: c.sent,
+    failed: c.failed,
+    refunded: c.refunded,
+    total: c.total,
+    startedAt: c.startedAt,
+    finishedAt: c.finishedAt,
+    results: c.results,
+  }));
   res.json({ campaigns: userCampaigns });
 });
 
@@ -401,7 +536,7 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     return res.status(409).json({ error: 'A campaign is already running. Please wait.' });
   }
 
-  // Credit check
+  // Credit check against DB
   const user = req.user;
   if (user.credits < list.length) {
     return res.status(402).json({
@@ -411,19 +546,21 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     });
   }
 
-  // Deduct credits upfront
-  user.credits -= list.length;
-  saveUsers();
+  // Deduct credits atomically (concurrency-safe)
+  const remaining = await adjustCredits(user.id, -list.length);
+  if (remaining === null) {
+    return res.status(402).json({ error: 'Failed to deduct credits. Try again.' });
+  }
 
-  transactions.push({
+  await insertTransaction({
     id: Date.now().toString(36),
     userId: user.id,
     type: 'credit_deduct',
     credits: -list.length,
     note: `Campaign to ${list.length} recipients`,
+    status: 'completed',
     createdAt: new Date().toISOString(),
   });
-  saveTransactions();
 
   console.log(`[campaign] Starting for ${list.length} recipients (user: ${user.email})...`);
   progress.running = true;
@@ -438,11 +575,21 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   res.json({
     success: true,
     message: 'Campaign started',
-    stats: { total: list.length, creditsRemaining: user.credits },
+    stats: { total: list.length, creditsRemaining: remaining },
   });
 
   const startedAt = new Date().toISOString();
+  const finishedAt = new Date().toISOString();
   const results = [];
+  const campaignId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+  // Conservative pacing helper: slow warm-up for first few messages, then steady 20-35s.
+  const delayFor = (index) => {
+    if (index < WARMUP_SEND_COUNT) {
+      return Math.floor(Math.random() * (WARMUP_MAX_DELAY_MS - WARMUP_MIN_DELAY_MS + 1)) + WARMUP_MIN_DELAY_MS;
+    }
+    return Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS + 1)) + MIN_DELAY_MS;
+  };
 
   for (let i = 0; i < list.length; i++) {
     const target = list[i];
@@ -491,43 +638,37 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
       result.status = 'failed';
       result.error = err.message;
       // Auto-refund credit on failure
-      user.credits += 1;
+      await adjustCredits(user.id, 1);
       progress.refunded++;
-      saveUsers();
     }
     results.push(result);
 
     if (i < list.length - 1) {
-      const delay = Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS + 1)) + MIN_DELAY_MS;
+      const delay = delayFor(i);
       progress.nextSendAt = Date.now() + delay;
       await sleep(delay);
       progress.nextSendAt = null;
     }
   }
 
-  transactions.push({
+  const realFinishedAt = new Date().toISOString();
+
+  await insertTransaction({
     id: Date.now().toString(36),
     userId: user.id,
     type: 'campaign_complete',
     credits: 0,
+    label: campaignId,
     note: `Sent: ${progress.sent}, Failed: ${progress.failed}, Refunded: ${progress.refunded}`,
+    status: 'completed',
     createdAt: new Date().toISOString(),
   });
-  saveTransactions();
 
-  campaigns.push({
-    id: Date.now().toString(36),
-    userId: user.id,
-    message: messageTemplate || '',
-    results,
-    sent: progress.sent,
-    failed: progress.failed,
-    refunded: progress.refunded,
-    total: list.length,
-    startedAt,
-    finishedAt: new Date().toISOString(),
-  });
-  saveCampaigns();
+  await pool.query(
+    `INSERT INTO campaigns (id, user_id, message, results, sent, failed, refunded, total, started_at, finished_at)
+     VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10)`,
+    [campaignId, user.id, messageTemplate || '', JSON.stringify(results), progress.sent, progress.failed, progress.refunded, list.length, startedAt, realFinishedAt]
+  );
 
   progress.running = false;
   console.log(`[campaign] Finished. Sent ${progress.sent}, failed ${progress.failed}, refunded ${progress.refunded}`);
@@ -562,119 +703,130 @@ app.get('/api/status', (req, res) => {
 });
 
 // --- ADMIN ROUTES ---
-app.get('/api/admin/pending', authMiddleware, adminMiddleware, (req, res) => {
-  const pending = transactions
-    .filter((t) => t.type === 'purchase_request' && t.status === 'pending')
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  res.json({ transactions: pending });
+app.get('/api/admin/pending', authMiddleware, adminMiddleware, async (req, res) => {
+  const { rows } = await pool.query(
+    "SELECT * FROM transactions WHERE type = 'purchase_request' AND status = 'pending' ORDER BY created_at DESC"
+  );
+  res.json({ transactions: rows.map(mapTx) });
 });
 
-app.get('/api/admin/transactions', authMiddleware, adminMiddleware, (req, res) => {
-  const all = transactions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 200);
-  res.json({ transactions: all });
+app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM transactions ORDER BY created_at DESC LIMIT 200');
+  res.json({ transactions: rows.map(mapTx) });
 });
 
-app.post('/api/admin/approve', authMiddleware, adminMiddleware, (req, res) => {
+app.post('/api/admin/approve', authMiddleware, adminMiddleware, async (req, res) => {
   const { transactionId } = req.body || {};
-  const tx = transactions.find((t) => t.id === transactionId && t.type === 'purchase_request');
-  if (!tx) {
-    return res.status(404).json({ error: 'Transaction not found' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      "SELECT * FROM transactions WHERE id = $1 AND type = 'purchase_request' FOR UPDATE",
+      [transactionId]
+    );
+    const tx = rows[0];
+    if (!tx) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    if (tx.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Transaction already processed' });
+    }
+    await client.query(
+      "UPDATE transactions SET status = 'approved', approved_at = now(), approved_by = $1 WHERE id = $2",
+      [req.user.email, transactionId]
+    );
+    const balance = await adjustCredits(tx.user_id, tx.credits);
+    await client.query(
+      `INSERT INTO transactions (id, user_id, type, credits, price, label, note, status, user_name, user_email, approved_at, approved_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now(), $11)`,
+      [Date.now().toString(36) + Math.random().toString(36).slice(2, 6), tx.user_id, 'credit_add', tx.credits, tx.price, tx.label, `Approved purchase: ${tx.label} (${tx.credits} credits for ₹${tx.price})`, 'approved', tx.user_name, tx.user_email, req.user.email]
+    );
+    await client.query('COMMIT');
+    res.json({ success: true, message: `${tx.credits} credits added to ${tx.user_email}`, newBalance: balance });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[admin] approve failed:', err.message);
+    res.status(500).json({ error: 'Failed to approve transaction' });
+  } finally {
+    client.release();
   }
-  if (tx.status !== 'pending') {
-    return res.status(400).json({ error: 'Transaction already processed' });
-  }
-  tx.status = 'approved';
-  tx.approvedAt = new Date().toISOString();
-  tx.approvedBy = req.user.email;
-
-  const user = users.find((u) => u.id === tx.userId);
-  if (user) {
-    user.credits += tx.credits;
-    saveUsers();
-
-    transactions.push({
-      id: Date.now().toString(36),
-      userId: tx.userId,
-      type: 'credit_add',
-      credits: tx.credits,
-      note: `Approved purchase: ${tx.label} (${tx.credits} credits for ₹${tx.price})`,
-      createdAt: new Date().toISOString(),
-    });
-    saveTransactions();
-  }
-
-  saveTransactions();
-  res.json({ success: true, message: `${tx.credits} credits added to ${tx.userEmail}` });
 });
 
-app.post('/api/admin/reject', authMiddleware, adminMiddleware, (req, res) => {
+app.post('/api/admin/reject', authMiddleware, adminMiddleware, async (req, res) => {
   const { transactionId } = req.body || {};
-  const tx = transactions.find((t) => t.id === transactionId && t.type === 'purchase_request');
-  if (!tx) {
-    return res.status(404).json({ error: 'Transaction not found' });
+  const { rowCount } = await pool.query(
+    "UPDATE transactions SET status = 'rejected', rejected_at = now() WHERE id = $1 AND type = 'purchase_request' AND status = 'pending'",
+    [transactionId]
+  );
+  if (rowCount === 0) {
+    return res.status(404).json({ error: 'Transaction not found or already processed' });
   }
-  if (tx.status !== 'pending') {
-    return res.status(400).json({ error: 'Transaction already processed' });
-  }
-  tx.status = 'rejected';
-  tx.rejectedAt = new Date().toISOString();
-  saveTransactions();
   res.json({ success: true, message: 'Transaction rejected' });
 });
 
 // --- ADMIN: manually add credits to a user (e.g. WhatsApp-arranged payment) ---
-app.post('/api/admin/add-credits', authMiddleware, adminMiddleware, (req, res) => {
+app.post('/api/admin/add-credits', authMiddleware, adminMiddleware, async (req, res) => {
   const { userId, credits, note } = req.body || {};
   const amount = parseInt(credits, 10);
-  const user = users.find((u) => u.id === userId);
+  const user = await getUserById(userId);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
   if (!Number.isInteger(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Credits must be a positive whole number' });
   }
-  user.credits += amount;
-  saveUsers();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const newBalance = await adjustCredits(user.id, amount);
+    await client.query(
+      `INSERT INTO transactions (id, user_id, type, credits, label, note, status, user_name, user_email, approved_at, approved_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now(), $10)`,
+      [Date.now().toString(36) + Math.random().toString(36).slice(2, 6), user.id, 'credit_add', amount, 'Manual credit', note ? `Manual credit: ${note}` : 'Manual credit from admin', 'approved', user.name, user.email, req.user.email]
+    );
+    await client.query('COMMIT');
+    res.json({ success: true, message: `Added ${amount} credits to ${user.email}. New balance: ${newBalance}`, newBalance });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[admin] add-credits failed:', err.message);
+    res.status(500).json({ error: 'Failed to add credits' });
+  } finally {
+    client.release();
+  }
+});
 
-  transactions.push({
-    id: Date.now().toString(36),
-    userId: user.id,
-    type: 'credit_add',
-    credits: amount,
-    note: note ? `Manual credit: ${note}` : 'Manual credit from admin',
-    status: 'approved',
-    createdAt: new Date().toISOString(),
+app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
+  const { rows } = await pool.query('SELECT id, name, email, credits, created_at FROM users ORDER BY created_at DESC');
+  res.json({
+    users: rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      credits: r.credits,
+      createdAt: r.created_at,
+    })),
   });
-  saveTransactions();
-  res.json({ success: true, message: `Added ${amount} credits to ${user.email}. New balance: ${user.credits}` });
 });
 
-app.get('/api/admin/users', authMiddleware, adminMiddleware, (req, res) => {
-  const list = users.map((u) => ({
-    id: u.id,
-    name: u.name,
-    email: u.email,
-    credits: u.credits,
-    createdAt: u.createdAt,
-  }));
-  res.json({ users: list });
-});
-
-app.get('/api/admin/stats', authMiddleware, adminMiddleware, (req, res) => {
-  const totalUsers = users.length;
-  const totalCreditsOutstanding = users.reduce((sum, u) => sum + u.credits, 0);
-  const totalRevenue = transactions
-    .filter((t) => t.type === 'purchase_request' && t.status === 'approved')
-    .reduce((sum, t) => sum + (t.price || 0), 0);
-  const totalMessagesSent = transactions
-    .filter((t) => t.type === 'campaign_complete')
-    .reduce((sum, t) => {
-      const match = t.note?.match(/Sent: (\d+)/);
-      return sum + (match ? parseInt(match[1]) : 0);
-    }, 0);
-  const pendingPurchases = transactions.filter((t) => t.type === 'purchase_request' && t.status === 'pending').length;
-
-  res.json({ totalUsers, totalCreditsOutstanding, totalRevenue, totalMessagesSent, pendingPurchases });
+app.get('/api/admin/stats', authMiddleware, adminMiddleware, async (req, res) => {
+  const { rows } = await pool.query(`
+    SELECT
+      (SELECT COUNT(*) FROM users)::int AS total_users,
+      (SELECT COALESCE(SUM(credits), 0) FROM users)::int AS credits_out,
+      (SELECT COALESCE(SUM(price), 0) FROM transactions WHERE type = 'purchase_request' AND status = 'approved')::int AS total_revenue,
+      (SELECT COALESCE(SUM(sent), 0) FROM campaigns)::int AS messages_sent,
+      (SELECT COUNT(*) FROM transactions WHERE type = 'purchase_request' AND status = 'pending')::int AS pending_purchases
+  `);
+  const r = rows[0];
+  res.json({
+    totalUsers: r.total_users,
+    totalCreditsOutstanding: r.credits_out,
+    totalRevenue: r.total_revenue,
+    totalMessagesSent: r.messages_sent,
+    pendingPurchases: r.pending_purchases,
+  });
 });
 
 // --- CATCH-ALL: serve app.html for /app and admin.html for /admin ---
@@ -683,14 +835,12 @@ app.get('/admin', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')
 
 app.listen(PORT, HOST, async () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
-  console.log(`Sessions stored in ${SESSIONS_DIR}`);
   console.log(`Default country code: +${DEFAULT_COUNTRY_CODE}`);
   console.log(`Admin email: ${ADMIN_EMAIL || '(set via fallbacks)'}`);
   try {
-    await seedDemoAccounts();
-    console.log(`[seed] Users on disk: ${users.length}`);
+    await initDb();
   } catch (e) {
-    console.error('[seed] Failed:', e.message);
+    console.error('[db] initDb failed:', e.message);
   }
   // Start WhatsApp connection after server is listening (lazy-load Baileys)
   setTimeout(() => {

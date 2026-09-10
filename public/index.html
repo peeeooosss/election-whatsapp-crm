@@ -109,7 +109,7 @@
             if (data.success) {
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('user', JSON.stringify(data.user));
-                showSuccess('Account created! 20 free messages added. Redirecting...');
+                showSuccess('Account created! 50 free messages added. Redirecting...');
                 setTimeout(() => { window.location.href = '/app'; }, 1500);
             } else {
                 showError(data.error || 'Registration failed');

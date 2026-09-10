@@ -13,10 +13,18 @@ services:
         value: 0.0.0.0
       - key: DEFAULT_COUNTRY_CODE
         value: "91"
+      - key: DATABASE_URL
+        sync: false
       - key: MIN_DELAY_MS
-        value: "30000"
+        value: "20000"
       - key: MAX_DELAY_MS
-        value: "55000"
+        value: "35000"
+      - key: WARMUP_SEND_COUNT
+        value: "15"
+      - key: WARMUP_MIN_DELAY_MS
+        value: "45000"
+      - key: WARMUP_MAX_DELAY_MS
+        value: "60000"
       - key: BATCH_SIZE
         value: "50"
       - key: BATCH_PAUSE_MS
@@ -25,6 +33,14 @@ services:
         value: "silent"
       - key: JWT_SECRET
         value: "CHANGE_ME_TO_A_RANDOM_STRING"
+      - key: FREE_CREDITS
+        value: "50"
+      - key: PRICE_PER_MSG
+        value: "0.4"
+      - key: MIN_QTY
+        value: "100"
+      - key: MAX_QTY
+        value: "1000"
       - key: ADMIN_EMAIL
         value: "piyushbhuyan71@gmail.com"
       - key: UPI_ID

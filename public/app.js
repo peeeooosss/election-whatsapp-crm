@@ -125,22 +125,6 @@
     reader.readAsArrayBuffer(file);
   };
 
-  document.getElementById('loadDemoBtn').onclick = async () => {
-    try {
-      const res = await fetch(API + '/demo-voters.xlsx');
-      const buf = await res.arrayBuffer();
-      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      allData = XLSX.utils.sheet_to_json(ws);
-      if (!allData.length) { alert('No rows found in demo file'); return; }
-      rowCount.textContent = '0';
-      showResults();
-      crmSearch.value = ''; crmDeptFilter.value = ''; crmYearFilter.value = '';
-    } catch {
-      alert('Could not load demo data. Check the server is online.');
-    }
-  };
-
   function showResults() {
     populateFilters();
     window._crmRender = renderTable;
