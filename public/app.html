@@ -39,7 +39,8 @@
         <input type="file" id="fileInput" accept=".xlsx,.xls" style="margin-bottom:12px;">
         <div style="margin-bottom:12px; font-size:0.9em;">
             <button type="button" class="btn btn-secondary" id="loadDemoBtn" style="width:auto; margin-right:8px;">📥 Load Demo Data</button>
-            <a href="demo-voters.xlsx" download style="font-size:0.85em;">Download demo-voters.xlsx</a>
+            <a href="demo-voters.xlsx" download style="font-size:0.85em; margin-right:8px;">Download demo-voters.xlsx</a>
+            <a href="voter-template.xlsx" download style="font-size:0.85em;">Download template (blank)</a>
         </div>
         <div id="crmSection" style="display:none;">
             <div class="filters">
@@ -71,11 +72,38 @@
         <div id="campaignStatus" class="status-bar" style="display:none;"></div>
     </div>
 
+    <!-- Section 3: Buy Credits -->
+    <div class="card">
+        <h2>Buy Credits</h2>
+        <p class="text-muted" style="font-size:0.9em;">₹<span id="pricePerMsg">0.40</span> per message. Choose how many messages to send (min 100, max 1000).</p>
+        <div class="buy-row">
+            <label for="qtyInput">Messages:</label>
+            <input type="number" id="qtyInput" min="100" max="1000" step="10" value="100" style="flex:1; min-width:120px;">
+            <span class="buy-price">= ₹<span id="buyPrice">40</span></span>
+        </div>
+        <button class="btn btn-success" id="buyBtn" style="margin-top:12px;">Buy Now</button>
+        <div id="buyDetails" style="display:none; margin-top:12px; font-size:0.95em;">
+            <p><strong>1. Pay via UPI</strong> to: <span class="upi-id" id="upiIdDisplay"></span> (<span id="upiNameDisplay"></span>) — ₹<span id="buyPrice2"></span></p>
+            <p><strong>2. Text me on WhatsApp</strong> with your email + payment confirmation 👇</p>
+            <a id="whatsappLink" href="#" target="_blank" rel="noopener" class="btn btn-primary" style="width:auto;">💬 Text me on WhatsApp</a>
+            <p class="text-muted" style="margin-top:8px;">Once you've paid, I'll add the credits from the admin panel.</p>
+        </div>
+        <div id="buyStatus" class="status-bar" style="display:none; margin-top:12px;"></div>
+    </div>
+
     <!-- Section 5: Credit History -->
     <div class="card">
         <h2 style="cursor:pointer;" id="historyToggle">▶ Credit History</h2>
         <div id="historyContent" style="display:none; margin-top:12px;">
             <div id="creditHistoryList"></div>
+        </div>
+    </div>
+
+    <!-- Section 6: Message History -->
+    <div class="card">
+        <h2 style="cursor:pointer;" id="msgHistoryToggle">▶ Sent Message History</h2>
+        <div id="msgHistoryContent" style="display:none; margin-top:12px;">
+            <div id="msgHistoryList"></div>
         </div>
     </div>
 

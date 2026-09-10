@@ -30,7 +30,11 @@ const LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
 const ADMIN_FALLBACKS = ['piyushbhuyan71@gmail.com', 'admin@elections.test'];
+const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || '9864854881';
 const FREE_CREDITS = 20;
+const PRICE_PER_MSG = 0.4;   // ₹0.40 per message
+const MIN_QTY = 100;
+const MAX_QTY = 1000;
 
 const SESSIONS_DIR = (() => {
   if (process.env.SESSIONS_DIR) {
@@ -53,6 +57,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const TX_FILE = path.join(DATA_DIR, 'transactions.json');
+const CAMPAIGNS_FILE = path.join(DATA_DIR, 'campaigns.json');
 
 // --- APP ---
 const app = express();
@@ -80,9 +85,11 @@ function writeJSON(file, data) {
 
 let users = readJSON(USERS_FILE, []);
 let transactions = readJSON(TX_FILE, []);
+let campaigns = readJSON(CAMPAIGNS_FILE, []);
 
 function saveUsers() { writeJSON(USERS_FILE, users); }
 function saveTransactions() { writeJSON(TX_FILE, transactions); }
+function saveCampaigns() { writeJSON(CAMPAIGNS_FILE, campaigns); }
 
 // --- DEMO ACCOUNTS SEEDER (re-created every boot; Render Free wipes data on redeploy) ---
 async function seedDemoAccounts() {
@@ -122,10 +129,7 @@ async function seedDemoAccounts() {
   saveTransactions();
 }
 
-// --- CREDIT TIERS ---
-const CREDIT_TIERS = [
-  { label: 'Standard', credits: 120, price: 49 }, // ₹0.40/msg — min 100, max 1000
-];
+// CREDIT pricing: see PRICE_PER_MSG / MIN_QTY / MAX_QTY in CONFIG above.
 
 // --- WHATSAPP SOCKET ---
 let sock = null;
@@ -140,6 +144,7 @@ const progress = {
   refunded: 0,
   currentIndex: 0,
   startedAt: null,
+  nextSendAt: null,
 };
 
 let whatsAppConnected = false;
@@ -174,13 +179,17 @@ async function connectToWhatsApp() {
 }
 
 // --- PHONE NORMALIZER ---
+// Handles: 10-digit local (e.g. 7086606995 OR 9132360520 — a local number that HAPPENS to start with 91),
+// 12-digit already-coded (919132360520), and plain international digits.
 function normalizePhone(input) {
   let digits = String(input || '').replace(/\D/g, '');
   if (!digits) return null;
-  const countryLen = DEFAULT_COUNTRY_CODE.length;
-  const hasCountryCode = digits.length > countryLen && digits.startsWith(DEFAULT_COUNTRY_CODE);
-  if (!hasCountryCode) digits = DEFAULT_COUNTRY_CODE + digits;
-  return digits + '@s.whatsapp.net';
+  if (digits.length === 10) {
+    digits = DEFAULT_COUNTRY_CODE + digits; // always prefix for 10-digit numbers
+  } else if (!digits.startsWith(DEFAULT_COUNTRY_CODE)) {
+    digits = DEFAULT_COUNTRY_CODE + digits;
+  }
+  return digits.slice(0, 13) + '@s.whatsapp.net';
 }
 
 // --- AUTH MIDDLEWARE ---
@@ -274,33 +283,52 @@ app.get('/api/me', authMiddleware, (req, res) => {
   res.json({ id: user.id, name: user.name, email: user.email, credits: user.credits });
 });
 
-// --- CREDIT TIERS ---
+// --- CREDIT TIERS (dynamic quantity pack: 100-1000 msgs at ₹0.40/msg) ---
 app.get('/api/tiers', (req, res) => {
-  res.json({ tiers: CREDIT_TIERS, upiId: process.env.UPI_ID || '9864854881@ptsbi', upiName: process.env.UPI_NAME || 'Piyush Bhuyan' });
+  res.json({
+    minQty: MIN_QTY,
+    maxQty: MAX_QTY,
+    pricePerMsg: PRICE_PER_MSG,
+    upiId: process.env.UPI_ID || '9864854881@ptsbi',
+    upiName: process.env.UPI_NAME || 'Piyush Bhuyan',
+    whatsapp: ADMIN_WHATSAPP,
+  });
 });
 
-// --- PURCHASE REQUEST (manual UPI) ---
+// --- PURCHASE REQUEST (manual UPI; admin credits user after payment) ---
 app.post('/api/purchase', authMiddleware, (req, res) => {
-  const { tierIndex } = req.body || {};
-  const tier = CREDIT_TIERS[tierIndex];
-  if (!tier) {
-    return res.status(400).json({ error: 'Invalid tier' });
+  const quantity = parseInt((req.body || {}).quantity, 10);
+  if (!Number.isFinite(quantity) || Number.isInteger(quantity) === false) {
+    return res.status(400).json({ error: `Select a quantity between ${MIN_QTY} and ${MAX_QTY} messages.` });
   }
+  if (quantity < MIN_QTY || quantity > MAX_QTY) {
+    return res.status(400).json({ error: `Quantity must be between ${MIN_QTY} and ${MAX_QTY} messages.` });
+  }
+  const price = Math.round(quantity * PRICE_PER_MSG);
   const tx = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     userId: req.user.id,
     userName: req.user.name,
     userEmail: req.user.email,
     type: 'purchase_request',
-    credits: tier.credits,
-    price: tier.price,
-    label: tier.label,
+    credits: quantity,
+    price,
+    label: `${quantity} messages`,
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
   transactions.push(tx);
   saveTransactions();
-  res.json({ success: true, transactionId: tx.id, message: 'Purchase request submitted. Admin will approve after UPI payment confirmation.' });
+  res.json({
+    success: true,
+    transactionId: tx.id,
+    message: 'Purchase request submitted. Pay the admin on UPI and confirm on WhatsApp — then credits will be added.',
+    price,
+    credits: quantity,
+    upiId: process.env.UPI_ID || '9864854881@ptsbi',
+    upiName: process.env.UPI_NAME || 'Piyush Bhuyan',
+    whatsapp: ADMIN_WHATSAPP,
+  });
 });
 
 // --- CREDIT HISTORY ---
@@ -310,6 +338,26 @@ app.get('/api/credits/history', authMiddleware, (req, res) => {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .slice(0, 50);
   res.json({ transactions: userTx });
+});
+
+// --- MESSAGE HISTORY (what the user sent) ---
+app.get('/api/history', authMiddleware, (req, res) => {
+  const userCampaigns = campaigns
+    .filter((c) => c.userId === req.user.id)
+    .sort((a, b) => new Date(b.finishedAt) - new Date(a.finishedAt))
+    .slice(0, 50)
+    .map((c) => ({
+      id: c.id,
+      message: c.message,
+      sent: c.sent,
+      failed: c.failed,
+      refunded: c.refunded,
+      total: c.total,
+      startedAt: c.startedAt,
+      finishedAt: c.finishedAt,
+      results: c.results,
+    }));
+  res.json({ campaigns: userCampaigns });
 });
 
 // --- WHATSAPP PAIRING ---
@@ -393,9 +441,13 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     stats: { total: list.length, creditsRemaining: user.credits },
   });
 
+  const startedAt = new Date().toISOString();
+  const results = [];
+
   for (let i = 0; i < list.length; i++) {
     const target = list[i];
     progress.currentIndex = i;
+    progress.nextSendAt = null;
 
     if (i > 0 && i % BATCH_SIZE === 0) {
       console.log(`[campaign] Batch limit (${i}) reached. Pausing ${Math.round(BATCH_PAUSE_MS / 60000)} min...`);
@@ -411,27 +463,45 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     finalMessage = finalMessage.replace(/{Year}/g, year);
 
     const jid = normalizePhone(target.Phone || target.phone);
+    const result = { name, phone: target.Phone || target.phone, jid, status: 'sent' };
     if (!jid) {
       progress.failed++;
+      result.status = 'failed';
+      result.error = 'Invalid phone number';
+      results.push(result);
       continue;
     }
 
     try {
+      // WhatsApp-existence check — avoid fake "sent" for numbers not on WhatsApp
+      let onWhatsApp = true;
+      try {
+        const checks = await sock.onWhatsApp(jid) || [];
+        onWhatsApp = checks.some((c) => c && c.exists);
+      } catch { /* treat as existing */ }
+      if (!onWhatsApp) {
+        throw new Error('Number not on WhatsApp');
+      }
       await sock.sendMessage(jid, { text: finalMessage });
       console.log(`[campaign] Sent to ${name || jid}`);
       progress.sent++;
     } catch (err) {
       console.error(`[campaign] Failed to send to ${jid}:`, err.message);
       progress.failed++;
+      result.status = 'failed';
+      result.error = err.message;
       // Auto-refund credit on failure
       user.credits += 1;
       progress.refunded++;
       saveUsers();
     }
+    results.push(result);
 
     if (i < list.length - 1) {
       const delay = Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS + 1)) + MIN_DELAY_MS;
+      progress.nextSendAt = Date.now() + delay;
       await sleep(delay);
+      progress.nextSendAt = null;
     }
   }
 
@@ -445,15 +515,43 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   });
   saveTransactions();
 
+  campaigns.push({
+    id: Date.now().toString(36),
+    userId: user.id,
+    message: messageTemplate || '',
+    results,
+    sent: progress.sent,
+    failed: progress.failed,
+    refunded: progress.refunded,
+    total: list.length,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+  });
+  saveCampaigns();
+
   progress.running = false;
   console.log(`[campaign] Finished. Sent ${progress.sent}, failed ${progress.failed}, refunded ${progress.refunded}`);
 });
 
-// --- PROGRESS ---
+// --- PROGRESS (includes countdown + ETA) ---
 app.get('/api/progress', (req, res) => {
+  let nextSendIn = null;
+  if (progress.running && progress.nextSendAt) {
+    nextSendIn = Math.max(0, progress.nextSendAt - Date.now());
+  }
+  let etaMs = null;
+  if (progress.running) {
+    const remaining = Math.max(0, progress.total - progress.sent - progress.failed);
+    const avgDelay = (MIN_DELAY_MS + MAX_DELAY_MS) / 2;
+    const sendTimeMs = 4000; // roughly per-message send latency
+    const batchesRemaining = Math.max(0, Math.ceil(remaining / BATCH_SIZE) - 1);
+    etaMs = (nextSendIn || 0) + remaining * (sendTimeMs + avgDelay) + batchesRemaining * BATCH_PAUSE_MS;
+  }
   res.json({
     ...progress,
     remaining: progress.total - progress.sent - progress.failed,
+    nextSendIn,
+    etaMs,
   });
 });
 
@@ -522,6 +620,33 @@ app.post('/api/admin/reject', authMiddleware, adminMiddleware, (req, res) => {
   tx.rejectedAt = new Date().toISOString();
   saveTransactions();
   res.json({ success: true, message: 'Transaction rejected' });
+});
+
+// --- ADMIN: manually add credits to a user (e.g. WhatsApp-arranged payment) ---
+app.post('/api/admin/add-credits', authMiddleware, adminMiddleware, (req, res) => {
+  const { userId, credits, note } = req.body || {};
+  const amount = parseInt(credits, 10);
+  const user = users.find((u) => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  if (!Number.isInteger(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'Credits must be a positive whole number' });
+  }
+  user.credits += amount;
+  saveUsers();
+
+  transactions.push({
+    id: Date.now().toString(36),
+    userId: user.id,
+    type: 'credit_add',
+    credits: amount,
+    note: note ? `Manual credit: ${note}` : 'Manual credit from admin',
+    status: 'approved',
+    createdAt: new Date().toISOString(),
+  });
+  saveTransactions();
+  res.json({ success: true, message: `Added ${amount} credits to ${user.email}. New balance: ${user.credits}` });
 });
 
 app.get('/api/admin/users', authMiddleware, adminMiddleware, (req, res) => {

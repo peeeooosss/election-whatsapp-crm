@@ -148,6 +148,7 @@ body {
 
 .btn-primary { background: var(--dark); color: white; width: 100%; }
 .btn-success { background: var(--primary); color: white; }
+.btn-secondary { background: #6c757d; color: white; }
 .btn-danger { background: var(--danger); color: white; }
 .btn-warning { background: var(--warning); color: #333; }
 .btn-info { background: var(--info); color: white; }
@@ -477,3 +478,61 @@ textarea:focus { outline: none; border-color: var(--primary); }
 .mb-16 { margin-bottom: 16px; }
 .mt-16 { margin-top: 16px; }
 .flex-between { display: flex; justify-content: space-between; align-items: center; }
+
+/* BUY CREDITS */
+.buy-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.buy-row label { font-weight: bold; }
+
+.buy-price {
+  font-size: 1.3em;
+  font-weight: bold;
+  color: var(--dark);
+  white-space: nowrap;
+}
+
+/* MESSAGE HISTORY */
+.history-item {
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.history-summary {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.9em;
+}
+
+.history-summary span { color: #666; }
+
+.history-detail { font-size: 0.9em; }
+
+.history-msg {
+  background: #f8f9fa;
+  border-left: 3px solid var(--primary);
+  padding: 8px 12px;
+  border-radius: 4px;
+}
+
+.recipient-row {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 0.85em;
+  border-bottom: 1px dashed #eee;
+}
+
+.recipient-row span:nth-child(1) { flex: 2; font-weight: 600; }
+.recipient-row span:nth-child(2) { flex: 2; color: #666; }
+.recipient-row span:nth-child(3) { flex: 2; color: var(--success); }
+.recipient-row.status-failed span:nth-child(3) { color: var(--danger); }

@@ -19,6 +19,10 @@
   const txList = document.getElementById('txList');
   const usersWrap = document.getElementById('usersWrap');
   const lastUpdated = document.getElementById('lastUpdated');
+  const creditUserSelect = document.getElementById('creditUserSelect');
+  const creditAmount = document.getElementById('creditAmount');
+  const addCreditsBtn = document.getElementById('addCreditsBtn');
+  const addCreditsStatus = document.getElementById('addCreditsStatus');
 
   function timestamp() { lastUpdated.textContent = 'Updated: ' + new Date().toLocaleTimeString(); }
 
@@ -105,6 +109,37 @@
     usersWrap.innerHTML = `<table><thead><tr><th>Name</th><th>Email</th><th>Credits</th><th>Joined</th></tr></thead><tbody>${
       data.users.map(u => `<tr><td>${u.name}</td><td>${u.email}</td><td><strong>${u.credits}</strong></td><td>${new Date(u.createdAt).toLocaleDateString()}</td></tr>`).join('')
     }</tbody></table>`;
+    creditUserSelect.innerHTML = data.users.map(u => `<option value="${u.id}">${u.name} (${u.email}) — ${u.credits} credits</option>`).join('');
+  }
+
+  // --- Manual Add Credits ---
+  addCreditsBtn.onclick = async () => {
+    const userId = creditUserSelect.value;
+    const credits = parseInt(creditAmount.value, 10);
+    addCreditsStatus.style.display = 'none';
+    if (!userId) { showAddCredits('Select a user', 'error'); return; }
+    if (!credits || credits <= 0) { showAddCredits('Enter a positive credit amount', 'error'); return; }
+    if (!confirm(`Add ${credits} credits to this user?`)) return;
+    addCreditsBtn.disabled = true;
+    try {
+      const data = await api('/api/admin/add-credits', { method: 'POST', body: JSON.stringify({ userId, credits }) });
+      if (data && data.success) {
+        showAddCredits(data.message, 'success');
+        creditAmount.value = '';
+        refreshAll();
+      } else {
+        showAddCredits(data?.error || 'Failed to add credits', 'error');
+      }
+    } catch {
+      showAddCredits('Network error', 'error');
+    }
+    addCreditsBtn.disabled = false;
+  };
+
+  function showAddCredits(msg, kind) {
+    addCreditsStatus.className = 'status-bar ' + kind;
+    addCreditsStatus.textContent = msg;
+    addCreditsStatus.style.display = 'block';
   }
 
   // --- Refresh All ---

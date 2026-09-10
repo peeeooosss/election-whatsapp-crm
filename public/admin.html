@@ -33,6 +33,18 @@
         <div id="pendingList"></div>
     </div>
 
+    <!-- Add Credits Manually -->
+    <div class="card">
+        <h2>Add Credits to a User</h2>
+        <p class="text-muted" style="font-size:0.85em;">Use this when you collected payment via WhatsApp/UPI directly.</p>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
+            <select id="creditUserSelect" style="flex:1; min-width:200px;"></select>
+            <input type="number" id="creditAmount" min="1" step="1" placeholder="Credits (e.g. 200)" style="flex:1; min-width:140px;">
+            <button class="btn btn-success" id="addCreditsBtn">Add Credits</button>
+        </div>
+        <div id="addCreditsStatus" class="status-bar" style="display:none; margin-top:10px;"></div>
+    </div>
+
     <!-- All Transactions -->
     <div class="card">
         <h2>All Transactions</h2>

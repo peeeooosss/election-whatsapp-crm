@@ -31,3 +31,5 @@ services:
         value: "9864854881@ptsbi"
       - key: UPI_NAME
         value: "Piyush Bhuyan"
+      - key: ADMIN_WHATSAPP
+        value: "9864854881"
