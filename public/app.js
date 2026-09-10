@@ -7,9 +7,18 @@
 
   function getToken() { return localStorage.getItem(TOKEN_KEY); }
   function getUser() { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } }
-  function logout() { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); window.location.href = '/'; }
+  function logout() { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); localStorage.removeItem('msgTemplate'); window.location.href = '/'; }
 
-  if (!getToken()) { window.location.href = '/'; return; }
+  // Client-side JWT expiry check — avoid loading the full page then being redirected
+  function isTokenExpired(token) {
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return payload.exp && payload.exp * 1000 < Date.now();
+    } catch { return true; }
+  }
+
+  const token = getToken();
+  if (!token || isTokenExpired(token)) { window.location.href = '/'; return; }
 
   async function api(url, opts = {}) {
     const headers = { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json', ...opts.headers };
@@ -49,6 +58,8 @@
   const upiIdDisplay = document.getElementById('upiIdDisplay');
   const upiNameDisplay = document.getElementById('upiNameDisplay');
   const whatsappLink = document.getElementById('whatsappLink');
+  const campaignStatusText = document.getElementById('campaignStatusText');
+  const refreshProgressBtn = document.getElementById('refreshProgressBtn');
 
   // --- State ---
   let allData = [];
@@ -160,10 +171,9 @@
   function fmtNumber(n) {
     if (!n) return '';
     const d = String(n).replace(/\D/g, '');
-    const cc = d.slice(0, 2);
-    const rest = d.slice(2);
-    const parts = rest.match(/.{1,5}/g) || [];
-    return '+' + cc + ' ' + parts.join(' ');
+    // Strip leading country code (91) to show user-entered format
+    const local = d.startsWith('91') && d.length > 10 ? d.slice(2) : d;
+    return local;
   }
 
   async function checkConnection() {
@@ -205,7 +215,7 @@
     const file = fileInput.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       const data = new Uint8Array(e.target.result);
       const wb = XLSX.read(data, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
@@ -216,9 +226,21 @@
       });
       if (!allData.length) { alert('No rows found'); return; }
       showResults();
+      // Persist to server so data survives refresh
+      await api('/api/voters', { method: 'POST', body: JSON.stringify({ name: file.name, data: allData }) });
     };
     reader.readAsArrayBuffer(file);
   };
+
+  async function loadSavedVoters() {
+    try {
+      const data = await api('/api/voters');
+      if (data && data.voters && Array.isArray(data.voters.data) && data.voters.data.length) {
+        allData = data.voters.data;
+        showResults();
+      }
+    } catch { /* non-fatal */ }
+  }
 
   function showResults() {
     populateFilters();
@@ -276,7 +298,8 @@
     startBtn.disabled = true;
     campaignStatus.style.display = 'block';
     campaignStatus.className = 'status-bar info';
-    campaignStatus.textContent = 'Starting campaign...';
+    campaignStatusText.textContent = 'Starting campaign...';
+    refreshProgressBtn.style.display = 'none';
 
     const res = await api('/api/send-bulk', {
       method: 'POST',
@@ -284,13 +307,15 @@
     });
 
     if (res && res.success) {
-      campaignStatus.textContent = `Campaign started for ${res.stats.total} recipients. Polling...`;
+      campaignStatusText.textContent = `Campaign started for ${res.stats.total} recipients. Polling...`;
+      refreshProgressBtn.style.display = 'inline-block';
       if (progressTimer) clearInterval(progressTimer);
       progressTimer = setInterval(pollProgress, 5000);
     } else {
       campaignStatus.className = 'status-bar error';
-      campaignStatus.textContent = res?.error || 'Failed to start campaign';
+      campaignStatusText.textContent = res?.error || 'Failed to start campaign';
       startBtn.disabled = false;
+      refreshProgressBtn.style.display = 'none';
     }
   };
 
@@ -302,14 +327,12 @@
       progressTimer = null;
       startBtn.disabled = false;
       campaignStatus.className = 'status-bar success';
-      campaignStatus.textContent = `Done! Sent: ${data.sent}, Failed: ${data.failed}, Refunded: ${data.refunded}`;
-      loadProfile(); // refresh credit balance
-      msgHistoryLoaded = false; // reload history next time it's opened
+      campaignStatusText.textContent = `Done! Sent: ${data.sent}, Failed: ${data.failed}, Refunded: ${data.refunded}`;
+      refreshProgressBtn.style.display = 'none';
+      loadProfile();
+      msgHistoryLoaded = false;
       const refreshed = await api('/api/history');
-      if (refreshed && refreshed.campaigns && refreshed.campaigns.length && msgHistoryContent.style.display === 'block') {
-        msgHistoryLoaded = true;
-        renderMsgHistory(refreshed.campaigns);
-      }
+      if (refreshed && refreshed.campaigns) renderMsgHistory(refreshed.campaigns);
       return;
     }
     const pct = data.total ? Math.round((data.sent / data.total) * 100) : 0;
@@ -323,8 +346,17 @@
       extra += ` | Time left: ~${mins}min`;
     }
     campaignStatus.className = 'status-bar info';
-    campaignStatus.textContent = `Sending ${data.sent}/${data.total} (${pct}%) | Failed: ${data.failed} | Refunded: ${data.refunded}${extra}`;
+    campaignStatusText.textContent = `Sending ${data.sent}/${data.total} (${pct}%) | Failed: ${data.failed} | Refunded: ${data.refunded}${extra}`;
   }
+
+  refreshProgressBtn.onclick = () => {
+    refreshProgressBtn.disabled = true;
+    refreshProgressBtn.textContent = 'Refreshing...';
+    pollProgress().then(() => {
+      refreshProgressBtn.disabled = false;
+      refreshProgressBtn.textContent = '↻ Refresh';
+    });
+  };
 
   // --- Credit History ---
   let historyLoaded = false;
@@ -476,4 +508,50 @@
   loadTiers();
   checkConnection();
   setInterval(checkConnection, 10000);
+  loadSavedVoters();
+
+  // Restore message template from localStorage
+  const savedMsg = localStorage.getItem('msgTemplate');
+  if (savedMsg) messageTemplate.value = savedMsg;
+  messageTemplate.addEventListener('input', () => {
+    localStorage.setItem('msgTemplate', messageTemplate.value);
+  });
+
+  // Auto-reconnect campaign progress if a campaign is running
+  (async () => {
+    try {
+      const prog = await api('/api/progress');
+      if (prog && prog.running) {
+        campaignStatus.style.display = 'block';
+        campaignStatus.className = 'status-bar info';
+        campaignStatusText.textContent = 'Reconnecting to campaign...';
+        refreshProgressBtn.style.display = 'inline-block';
+        pollProgress();
+        if (progressTimer) clearInterval(progressTimer);
+        progressTimer = setInterval(pollProgress, 5000);
+      }
+    } catch { /* non-fatal */ }
+  })();
+
+  // Pre-fetch history data so it's ready when the user opens the panels
+  (async () => {
+    try {
+      const [credits, msgs] = await Promise.all([api('/api/credits/history'), api('/api/history')]);
+      if (credits && credits.transactions) {
+        historyLoaded = true;
+        creditHistoryList.innerHTML = credits.transactions.length === 0
+          ? '<p class="text-muted">No transactions yet</p>'
+          : credits.transactions.map(t => {
+            const sign = t.credits > 0 ? '+' : '';
+            const color = t.credits > 0 ? 'var(--success)' : t.credits < 0 ? 'var(--danger)' : '#666';
+            const date = new Date(t.createdAt).toLocaleString();
+            return `<div class="tx-row"><div class="tx-info"><div class="tx-detail">${t.note || t.type}</div><div class="tx-time">${date}</div></div><div class="tx-amount" style="color:${color}">${sign}${t.credits}</div></div>`;
+          }).join('');
+      }
+      if (msgs && msgs.campaigns) {
+        msgHistoryLoaded = true;
+        renderMsgHistory(msgs.campaigns);
+      }
+    } catch { /* non-fatal */ }
+  })();
 })();

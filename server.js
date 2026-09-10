@@ -106,6 +106,16 @@ async function initDb() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_user ON campaigns(user_id, finished_at DESC)`);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS voter_lists (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      data JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_voter_lists_user ON voter_lists(user_id, created_at DESC)`);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS whatsapp_state (
       key TEXT PRIMARY KEY,
       value JSONB NOT NULL
@@ -410,7 +420,7 @@ class WhatsAppManager {
     // On successful connection, capture the real linked number. Keep the pinned
     // linker (set at pairing time) so only they can re-pair later.
     if (this.socket?.user?.id) {
-      const number = this.socket.user.id.split('@')[0];
+      const number = this.socket.user.id.split('@')[0].split(':')[0];
       const existing = this.device;
       this.device = {
         number,
@@ -710,6 +720,33 @@ app.get('/api/history', authMiddleware, async (req, res) => {
     results: c.results,
   }));
   res.json({ campaigns: userCampaigns });
+});
+
+// --- VOTER LIST PERSISTENCE ---
+app.get('/api/voters', authMiddleware, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT id, name, data, created_at FROM voter_lists WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
+    [req.user.id]
+  );
+  if (!rows.length) return res.json({ voters: null });
+  res.json({ voters: { id: rows[0].id, name: rows[0].name, data: rows[0].data, createdAt: rows[0].created_at } });
+});
+
+app.post('/api/voters', authMiddleware, async (req, res) => {
+  try {
+    const { name, data } = req.body;
+    if (!Array.isArray(data) || !data.length) return res.status(400).json({ error: 'No voter data provided.' });
+    const id = crypto.randomUUID();
+    const label = name || `Upload ${new Date().toLocaleDateString()}`;
+    await pool.query(
+      'INSERT INTO voter_lists (id, user_id, name, data) VALUES ($1, $2, $3, $4::jsonb)',
+      [id, req.user.id, label, JSON.stringify(data)]
+    );
+    res.json({ success: true, id, name: label, count: data.length });
+  } catch (error) {
+    console.error('Error saving voter list:', error);
+    res.status(500).json({ error: 'Failed to save voter list.' });
+  }
 });
 
 // --- WHATSAPP PAIRING ---
