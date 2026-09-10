@@ -72,6 +72,8 @@
   }
 
   // --- WhatsApp Connection ---
+  const userEmail = (getUser() || {}).email || '';
+
   getPairingBtn.onclick = async () => {
     const phone = phoneInput.value.trim();
     if (!phone) return alert('Enter phone number');
@@ -79,10 +81,12 @@
     getPairingBtn.textContent = 'Generating...';
     try {
       const data = await api('/api/request-code', { method: 'POST', body: JSON.stringify({ phoneNumber: phone }) });
-      if (data && data.success) {
+      if (data && data.success && data.code) {
         pairingCodeDisplay.textContent = data.code;
         pairingCodeDisplay.style.display = 'block';
         alert('Code generated! Enter this code in WhatsApp > Linked Devices > Link with phone number.');
+      } else if (data && data.linkedByEmail) {
+        alert(`This number is linked to ${data.linkedByEmail}. Only the original linker (or admin) can re-pair.`);
       } else {
         alert(data?.error || 'Failed to generate code');
       }
@@ -91,16 +95,80 @@
     getPairingBtn.textContent = 'Get Pairing Code';
   };
 
+  const reconnectBtn = document.getElementById('reconnectBtn');
+  const disconnectBtn = document.getElementById('disconnectBtn');
+  const linkedDeviceInfo = document.getElementById('linkedDeviceInfo');
+
+  reconnectBtn.onclick = async () => {
+    reconnectBtn.disabled = true;
+    reconnectBtn.textContent = 'Reconnecting...';
+    try {
+      const data = await api('/api/reconnect', { method: 'POST' });
+      if (data && data.success) {
+        connStatus.className = 'conn-status disconnected';
+        connStatus.innerHTML = '<span class="dot"></span> Reconnecting...';
+      } else {
+        alert(data?.error || 'Reconnect failed');
+      }
+    } catch { alert('Network error'); }
+    reconnectBtn.disabled = false;
+    reconnectBtn.textContent = 'Reconnect';
+    checkConnection();
+  };
+
+  disconnectBtn.onclick = async () => {
+    if (!confirm('Disconnect the linked WhatsApp number? You will need to generate a new pairing code and re-link.')) return;
+    disconnectBtn.disabled = true;
+    disconnectBtn.textContent = 'Disconnecting...';
+    try {
+      const data = await api('/api/disconnect', { method: 'POST' });
+      if (data && data.success) {
+        alert('Disconnected. Generate a new pairing code to link again.');
+      } else {
+        alert(data?.error || 'Disconnect failed');
+      }
+    } catch { alert('Network error'); }
+    disconnectBtn.disabled = false;
+    disconnectBtn.textContent = 'Disconnect';
+    checkConnection();
+  };
+
+  function fmtNumber(n) {
+    if (!n) return '';
+    const d = String(n).replace(/\D/g, '');
+    const cc = d.slice(0, 2);
+    const rest = d.slice(2);
+    const parts = rest.match(/.{1,5}/g) || [];
+    return '+' + cc + ' ' + parts.join(' ');
+  }
+
   async function checkConnection() {
     try {
       const data = await api('/api/status');
       if (!data) return;
+      const num = data.deviceNumber ? fmtNumber(data.deviceNumber) : '';
+      const linkedByYou = data.linkedByEmail && data.linkedByEmail.toLowerCase() === userEmail.toLowerCase();
+
       if (data.connected) {
         connStatus.className = 'conn-status connected';
-        connStatus.innerHTML = '<span class="dot"></span> Connected';
+        connStatus.innerHTML = `<span class="dot"></span> Connected${num ? ' to ' + num : ''}`;
+        reconnectBtn.style.display = 'none';
+        disconnectBtn.style.display = linkedByYou ? 'inline-block' : 'none';
+        getPairingBtn.disabled = false;
+        linkedDeviceInfo.style.display = num ? 'block' : 'none';
+        linkedDeviceInfo.innerHTML = num
+          ? `Linked device: <strong>${num}</strong> ${linkedByYou ? '<span style="color:var(--success,#27ae60)">(linked by you)</span>' : `(linked by ${data.linkedByEmail})`}` + (linkedByYou ? '' : ' — only the linker/admin can re-pair after a disconnect.')
+          : '';
       } else {
         connStatus.className = 'conn-status disconnected';
-        connStatus.innerHTML = '<span class="dot"></span> Not connected';
+        connStatus.innerHTML = `<span class="dot"></span> ${data.state === 'connecting' ? 'Connecting...' : data.state === 'logged_out' ? 'Logged out — re-pair required' : 'Not connected'}`;
+        reconnectBtn.style.display = data.state === 'disconnected' || data.state === 'connecting' ? 'inline-block' : 'none';
+        disconnectBtn.style.display = 'none';
+        getPairingBtn.disabled = false;
+        linkedDeviceInfo.style.display = num ? 'block' : 'none';
+        linkedDeviceInfo.innerHTML = num
+          ? `Previously linked: <strong>${num}</strong>${data.linkedByEmail ? ' (linked by ' + data.linkedByEmail + ')' : ''}. ${linkedByYou ? 'You can re-pair a new code.' : 'Only the original linker or admin can re-pair.'}`
+          : '';
       }
     } catch {}
   }
