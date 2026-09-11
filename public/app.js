@@ -137,8 +137,6 @@
         pairingCodeDisplay.style.display = 'block';
         alert(`Code generated for ${num || phone}! Enter it in WhatsApp within 2 minutes: WhatsApp Settings > Linked Devices > Link a Device > "Link with phone number instead".`);
         startCodeCountdown(120);
-      } else if (data && data.linkedByEmail) {
-        alert(`This number is linked to ${data.linkedByEmail}. Only the original linker (or admin) can re-pair.`);
       } else {
         alert(data?.error || 'Failed to generate code');
       }

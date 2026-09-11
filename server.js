@@ -121,6 +121,41 @@ async function initDb() {
       value JSONB NOT NULL
     )
   `);
+
+  // One-time migration: the pre-multi-device build kept ONE shared device/session
+  // under bare keys ('device', 'creds.json', ...). Move it (and all its pairing
+  // keys) into the original linker's per-user namespace so their phone keeps
+  // working without re-pairing on first deploy of the multi-device build.
+  const { rows: legacyDeviceRows } = await pool.query(`SELECT value FROM whatsapp_state WHERE key = 'device'`);
+  if (legacyDeviceRows.length) {
+    const legacyDevice = legacyDeviceRows[0].value;
+    if (legacyDevice && legacyDevice.linkedByEmail) {
+      const { rows: ownerRows } = await pool.query('SELECT id FROM users WHERE LOWER(email) = $1', [String(legacyDevice.linkedByEmail).toLowerCase()]);
+      const owner = ownerRows[0];
+      if (owner) {
+        const { rows: legacyRows } = await pool.query(`SELECT key, value FROM whatsapp_state WHERE key <> 'device' AND key NOT LIKE 'u%'`);
+        let migrated = 0;
+        for (const row of legacyRows) {
+          await pool.query(
+            'INSERT INTO whatsapp_state (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO NOTHING',
+            [`u${owner.id}:${row.key}`, row.value]
+          );
+          migrated++;
+        }
+        await pool.query(
+          'INSERT INTO whatsapp_state (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO NOTHING',
+          [deviceKey(owner.id), JSON.stringify(legacyDevice)]
+        );
+        await pool.query("DELETE FROM whatsapp_state WHERE key <> 'device' AND key NOT LIKE 'u%'");
+        await pool.query("DELETE FROM whatsapp_state WHERE key = 'device'");
+        console.log(`[db] Migrated legacy shared device to ${legacyDevice.linkedByEmail} (${migrated} session keys).`);
+      } else {
+        console.log('[db] Legacy device owner email not found as a user — leaving legacy session in place.');
+      }
+    } else {
+      console.log('[db] Legacy device has no linker email — skipping migration.');
+    }
+  }
   console.log('[db] Schema ready (Postgres).');
 }
 
@@ -209,26 +244,37 @@ async function adjustCredits(userId, delta) {
   return rows[0] ? rows[0].credits : null;
 }
 
-// --- WHATSAPP SOCKET (managed by WhatsAppManager below) ---
-const progress = {
-  running: false,
-  userId: null,
-  total: 0,
-  sent: 0,
-  failed: 0,
-  refunded: 0,
-  currentIndex: 0,
-  startedAt: null,
-  nextSendAt: null,
-  nextTarget: null,
-  batchBreak: false,
-  imageName: null,
-};
+// --- PER-USER CAMPAIGN PROGRESS ---
+// Each account gets its own progress object so multiple users can run
+// campaigns concurrently, each from their own linked WhatsApp number.
+const progressByUser = {};
+function getProgress(userId) {
+  if (!progressByUser[userId]) {
+    progressByUser[userId] = {
+      running: false,
+      userId,
+      total: 0,
+      sent: 0,
+      failed: 0,
+      refunded: 0,
+      currentIndex: 0,
+      startedAt: null,
+      nextSendAt: null,
+      nextTarget: null,
+      batchBreak: false,
+      imageName: null,
+    };
+  }
+  return progressByUser[userId];
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Postgres-backed Baileys auth state: pairing survives Render redeploys.
-async function usePostgresAuthState() {
+// Every key is namespaced by user id so each account owns an isolated WhatsApp
+// session (their own device credential, separate from every other user's).
+async function usePostgresAuthState(userId) {
+  const ns = `u${userId}:`;
   const { initAuthCreds, BufferJSON } = baileys();
   const protoModule = require('@whiskeysockets/baileys/WAProto/index.js');
   const proto = protoModule.proto || protoModule.default.proto;
@@ -240,19 +286,19 @@ async function usePostgresAuthState() {
   };
 
   const readData = async (key) => {
-    const { rows } = await pool.query('SELECT value FROM whatsapp_state WHERE key = $1', [key]);
+    const { rows } = await pool.query('SELECT value FROM whatsapp_state WHERE key = $1', [ns + key]);
     return rows.length ? readBuf(rows[0].value) : null;
   };
 
   const writeData = async (key, data) => {
     await pool.query(
       'INSERT INTO whatsapp_state (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
-      [key, JSON.stringify(data, BufferJSON.replacer)]
+      [ns + key, JSON.stringify(data, BufferJSON.replacer)]
     );
   };
 
   const removeData = async (key) => {
-    await pool.query('DELETE FROM whatsapp_state WHERE key = $1', [key]);
+    await pool.query('DELETE FROM whatsapp_state WHERE key = $1', [ns + key]);
   };
 
   const creds = (await readData('creds.json')) || initAuthCreds();
@@ -264,12 +310,12 @@ async function usePostgresAuthState() {
         get: async (type, ids) => {
           const data = {};
           if (!ids || !ids.length) return data;
-          const keys = ids.map((id) => `${type}-${id}.json`);
+          const keys = ids.map((id) => `${ns}${type}-${id}.json`);
           const { rows } = await pool.query('SELECT key, value FROM whatsapp_state WHERE key = ANY($1)', [keys]);
           const byKey = {};
           for (const row of rows) byKey[row.key] = readBuf(row.value);
           for (const id of ids) {
-            let value = byKey[`${type}-${id}.json`] || null;
+            let value = byKey[`${ns}${type}-${id}.json`] || null;
             if (type === 'app-state-sync-key' && value) {
               value = proto.Message.AppStateSyncKeyData.fromObject(value);
             }
@@ -282,7 +328,7 @@ async function usePostgresAuthState() {
           for (const category in data) {
             for (const id in data[category]) {
               const value = data[category][id];
-              const key = `${category}-${id}.json`;
+              const key = `${ns}${category}-${id}.json`;
               tasks.push(value ? writeData(key, value) : removeData(key));
             }
           }
@@ -294,38 +340,47 @@ async function usePostgresAuthState() {
   };
 }
 
-// --- DEVICE REGISTRY (which shared WhatsApp number is linked, and by whom) ---
-const DEVICE_KEY = 'device';
+// --- DEVICE REGISTRY (per-user: which WhatsApp number that account linked) ---
+const deviceKey = (userId) => `u${userId}:device`;
+const credsKey = (userId) => `u${userId}:creds.json`;
 
-async function saveDevice(device) {
+async function saveDevice(device, userId) {
   await pool.query(
     'INSERT INTO whatsapp_state (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
-    [DEVICE_KEY, JSON.stringify(device)]
+    [deviceKey(userId), JSON.stringify(device)]
   );
 }
 
-async function loadDevice() {
-  const { rows } = await pool.query('SELECT value FROM whatsapp_state WHERE key = $1', [DEVICE_KEY]);
-  if (!rows.length) return null;
-  return rows[0].value;
+async function loadDevice(userId) {
+  const { rows } = await pool.query('SELECT value FROM whatsapp_state WHERE key = $1', [deviceKey(userId)]);
+  return rows.length ? rows[0].value : null;
 }
 
-// Clear the WhatsApp session (creds + all pairing keys) but KEEP the device
-// record, so the original linker keeps re-pair rights after a logout.
-async function clearSessionKeys() {
-  await pool.query("DELETE FROM whatsapp_state WHERE key <> 'device'");
+// True when a user has an actual paired session stored (i.e. they linked a phone
+// before). We only auto-connect sockets for users who already have creds — a
+// fresh unpaired socket would just spin until WhatsApp closes it.
+async function hasStoredSession(userId) {
+  const { rows } = await pool.query('SELECT 1 FROM whatsapp_state WHERE key = $1', [credsKey(userId)]);
+  return rows.length > 0;
+}
+
+// Clear the WhatsApp session (creds + all pairing keys) for a user but KEEP the
+// device record, so the user's linked identity is preserved after a logout.
+async function clearSessionKeys(userId) {
+  await pool.query("DELETE FROM whatsapp_state WHERE key LIKE $1 AND key <> $2", [`u${userId}:%`, deviceKey(userId)]);
 }
 
 // --- WHATSAPP SOCKET MANAGER ---
 // Replaces the old global `sock`/`whatsAppConnected` with robust lifecycle
 // handling: auto-reconnect, pinned device state, and manual reconnect control.
 class WhatsAppManager {
-  constructor() {
+  constructor(userId) {
+    this.userId = userId;
     this.socket = null;
     this.state = 'initializing'; // initializing | connecting | connected | disconnected | logged_out
     this.device = null;          // { number, linkedByUserId, linkedByEmail, linkedAt } persisted in DB
+    this._initPromise = null;
     this.reconnectTimer = null;
-    this.initPromise = null;
     this.pendingPair = null;
     this.pairingWindowOpen = false; // true once the socket finishes the noise handshake and enters the pairing window (qr event)
     this.pairingRequestInFlight = false;
@@ -334,20 +389,26 @@ class WhatsAppManager {
   get connected() { return this.state === 'connected' && !!this.socket; }
   get ready() { return !!this.socket; }
 
-  async init() {
-    this.device = await loadDevice();
+  hasStoredSession() { return hasStoredSession(this.userId); }
+
+  init() {
+    if (!this._initPromise) {
+      this._initPromise = loadDevice(this.userId).then((d) => { this.device = d; });
+    }
+    return this._initPromise;
   }
 
   // Idempotent socket init: returns existing socket or creates a new one.
   async ensureSocket() {
+    await this.init();
     if (this.socket) return this.socket;
-    if (this.initPromise) return this.initPromise;
-    this.initPromise = this.createSocket();
+    if (this._createPromise) return this._createPromise;
+    this._createPromise = this.createSocket();
     try {
-      await this.initPromise;
+      await this._createPromise;
       return this.socket;
     } finally {
-      this.initPromise = null;
+      this._createPromise = null;
     }
   }
 
@@ -355,7 +416,7 @@ class WhatsAppManager {
     const { default: makeWASocket, DisconnectReason, Browsers } = baileys();
     this.DisconnectReason = DisconnectReason;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    const { state, saveCreds } = await usePostgresAuthState();
+    const { state, saveCreds } = await usePostgresAuthState(this.userId);
     const newSock = makeWASocket({
       printQRInTerminal: false,
       auth: state,
@@ -404,16 +465,20 @@ class WhatsAppManager {
       if (this.socket === closedSock) this.socket = null;
       if (isLoggedOut) {
         this.state = 'logged_out';
-        // Keep the device record (so only the linker can re-pair) but drop the
-        // invalid session creds so a fresh pairing is possible.
-        await clearSessionKeys();
+        // Keep the device record but drop the invalid session creds so a fresh
+        // pairing is possible.
+        await clearSessionKeys(this.userId);
         return;
       }
+      // Only auto-reconnect when we still hold a real paired session. A fresh
+      // unpaired socket (e.g. user never linked a phone) must not spin forever.
+      const hasSession = await hasStoredSession(this.userId).catch(() => false);
+      if (!hasSession) { this.state = 'disconnected'; return; }
       // Guard against a stale timer: only auto-reconnect if no newer socket has
       // been created in the meantime (e.g. a fresh pairing socket).
       this.reconnectTimer = setTimeout(() => {
         if (this.socket !== null) return;  // a newer socket already exists
-        console.log('[whatsapp] Reconnecting...');
+        console.log(`[whatsapp] Reconnecting (user ${this.userId})...`);
         this.ensureSocket().catch((e) => console.error('[whatsapp] Reconnect error:', e.message));
       }, 3000);
     }
@@ -427,11 +492,11 @@ class WhatsAppManager {
       const existing = this.device;
       this.device = {
         number,
-        linkedByUserId: existing?.linkedByUserId || this.linkedByUserId || null,
+        linkedByUserId: existing?.linkedByUserId || this.linkedByUserId || this.userId,
         linkedByEmail: existing?.linkedByEmail || this.linkedByEmail || null,
         linkedAt: existing?.linkedAt || new Date().toISOString(),
       };
-      await saveDevice(this.device);
+      await saveDevice(this.device, this.userId);
     }
   }
 
@@ -506,7 +571,8 @@ class WhatsAppManager {
   }
 
   // Permanent disconnect: log out the WhatsApp device and drop the session
-  // (creds/keys). The device record is kept so only the linker can re-pair.
+  // (creds/keys) for this user. The device record is kept so re-pairing stays
+  // tied to the same account.
   async disconnect() {
     this.state = 'logged_out';
     if (this.pendingPair) {
@@ -516,18 +582,41 @@ class WhatsAppManager {
     }
     try { if (this.socket) await this.socket.logout(); } catch {}
     this.socket = null;
-    await clearSessionKeys();
+    await clearSessionKeys(this.userId);
     return 'disconnected';
   }
 }
 
-const wa = new WhatsAppManager();
+const managers = new Map();
+function getManager(userId) {
+  let m = managers.get(userId);
+  if (!m) {
+    m = new WhatsAppManager(userId);
+    managers.set(userId, m);
+    m.init().catch((e) => console.error(`[whatsapp] init error (user ${userId}):`, e.message));
+  }
+  return m;
+}
 
-// Device linking happens via /api/request-code below; those fields pin who gets
-// to re-pair if the socket ever disconnects.
-async function ensureWhatsApp() {
-  await wa.init();
-  await wa.ensureSocket();
+// Auto-connect sockets for every user who already has a paired session — this
+// is what re-links phones after a Render restart. Users without creds are
+// skipped (their managers connect lazily once they generate a pairing code).
+async function connectAllDevices() {
+  const { rows } = await pool.query(`SELECT key FROM whatsapp_state WHERE key LIKE 'u%:device'`);
+  for (const row of rows) {
+    const userId = row.key.slice(1, row.key.lastIndexOf(':'));
+    try {
+      const m = getManager(userId);
+      if (await m.hasStoredSession()) {
+        await m.ensureSocket();
+        console.log(`[whatsapp] Auto-connecting user ${userId}...`);
+      } else {
+        console.log(`[whatsapp] User ${userId} has no session yet (waiting for pairing).`);
+      }
+    } catch (e) {
+      console.error(`[whatsapp] Auto-connect failed for user ${userId}:`, e.message);
+    }
+  }
 }
 
 // --- PHONE NORMALIZER ---
@@ -752,36 +841,27 @@ app.post('/api/voters', authMiddleware, async (req, res) => {
   }
 });
 
-// --- WHATSAPP PAIRING ---
-// Only one shared number may be linked. The account that generates a pairing
-// code becomes its owner ("linker") and is the ONLY one who can re-pair after
-// a disconnect (admin can also re-pair).
+// --- WHATSAPP PAIRING (per-user device linking) ---
+// Each account links its own WhatsApp number independently.
 app.post('/api/request-code', authMiddleware, async (req, res) => {
   const { phoneNumber } = req.body || {};
   if (!phoneNumber) {
     return res.status(400).json({ error: 'Phone number is required' });
   }
-  const isAdmin = isAdminEmail(req.user.email);
 
-  // Already linked to this user? Only the linker (or admin) may re-pair.
-  if (wa.device && wa.device.linkedByUserId && wa.device.linkedByUserId !== req.user.id && !isAdmin) {
-    return res.status(403).json({
-      error: `The shared WhatsApp number is linked to ${wa.device.linkedByEmail || 'another account'}. Only the original linker can generate a pairing code.`,
-      linkedByEmail: wa.device.linkedByEmail,
-    });
-  }
+  const manager = getManager(req.user.id);
 
   // If a socket exists and is connected, requestPairingCode is invalid — bail.
-  if (wa.connected) {
+  if (manager.connected) {
     return res.status(400).json({
-      error: 'WhatsApp is already connected. Use Disconnect to re-pair a new number.',
+      error: 'WhatsApp is already connected to this account. Use Disconnect to link a different number.',
       connected: true,
     });
   }
 
   try {
     // Fresh pairing always starts from clean creds (removes any stale session).
-    await clearSessionKeys();
+    await clearSessionKeys(req.user.id);
     const cleanNumber = cleanPhoneNumber(phoneNumber);
     if (!cleanNumber) {
       throw new Error('Invalid phone number.');
@@ -789,18 +869,15 @@ app.post('/api/request-code', authMiddleware, async (req, res) => {
 
     // Generate the code only after the socket is actually connected to
     // WhatsApp's servers — otherwise the code is silently never registered.
-    const code = await wa.requestPairingCode(cleanNumber);
+    const code = await manager.requestPairingCode(cleanNumber);
     console.log(`[whatsapp] Pairing code generated for ${cleanNumber} by ${req.user.email}`);
-    // Pin this number to the requesting user so only they can re-pair.
-    wa.linkedByUserId = req.user.id;
-    wa.linkedByEmail = req.user.email;
-    wa.device = {
+    manager.device = {
       number: cleanNumber,
       linkedByUserId: req.user.id,
       linkedByEmail: req.user.email,
       linkedAt: new Date().toISOString(),
     };
-    await saveDevice(wa.device);
+    await saveDevice(manager.device, req.user.id);
     const expected = cleanPhoneNumber(ADMIN_WHATSAPP);
     res.json({
       success: true,
@@ -824,8 +901,9 @@ app.post('/api/request-code', authMiddleware, async (req, res) => {
 // --- MANUAL RECONNECT (button) ---
 app.post('/api/reconnect', authMiddleware, async (req, res) => {
   try {
-    await wa.reconnect();
-    res.json({ success: true, state: wa.state });
+    const manager = getManager(req.user.id);
+    await manager.reconnect();
+    res.json({ success: true, state: manager.state });
   } catch (error) {
     console.error('[whatsapp] Reconnect error:', error);
     res.status(500).json({ error: 'Reconnect failed. Try again.' });
@@ -834,16 +912,11 @@ app.post('/api/reconnect', authMiddleware, async (req, res) => {
 
 // --- DISCONNECT / LOGOUT (button) ---
 // Logs out the WhatsApp device and clears the linked identity so a new number
-// can be paired. Only the linker or an admin may do this.
+// can be paired. Only the user who linked their own device (or admin) may do this.
 app.post('/api/disconnect', authMiddleware, async (req, res) => {
-  const isAdmin = isAdminEmail(req.user.email);
-  if (wa.device && wa.device.linkedByUserId && wa.device.linkedByUserId !== req.user.id && !isAdmin) {
-    return res.status(403).json({
-      error: 'Only the original linker (or an admin) can disconnect this WhatsApp number.',
-    });
-  }
   try {
-    await wa.disconnect();
+    const manager = getManager(req.user.id);
+    await manager.disconnect();
     res.json({ success: true, state: 'disconnected' });
   } catch (error) {
     console.error('[whatsapp] Disconnect error:', error);
@@ -851,26 +924,28 @@ app.post('/api/disconnect', authMiddleware, async (req, res) => {
   }
 });
 
-// --- SEND BULK (credit-checked) ---
+// --- SEND BULK (credit-checked, per-user device) ---
 app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   const { targets, messageTemplate, base64Image, imageName } = req.body || {};
   const list = Array.isArray(targets) ? targets : [];
+  const user = req.user;
+  const manager = getManager(user.id);
+  const progress = getProgress(user.id);
 
-  if (!wa.ready) {
+  if (!manager.ready) {
     return res.status(400).json({ error: 'WhatsApp connection missing or not authorized.' });
   }
   if (list.length === 0) {
     return res.status(400).json({ error: 'No targets provided.' });
   }
-  if (!wa.connected) {
-    return res.status(400).json({ error: 'WhatsApp is not connected yet. Generate a pairing code and link your device first.' });
+  if (!manager.connected) {
+    return res.status(400).json({ error: 'WhatsApp is not connected to your account yet. Generate a pairing code and link your device first.' });
   }
   if (progress.running) {
-    return res.status(409).json({ error: 'A campaign is already running. Please wait.' });
+    return res.status(409).json({ error: 'A campaign is already running for your account. Please wait.' });
   }
 
   // Credit check against DB
-  const user = req.user;
   if (user.credits < list.length) {
     return res.status(402).json({
       error: `Insufficient credits. You have ${user.credits} credits but need ${list.length}. Buy more credits to continue.`,
@@ -1008,16 +1083,16 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
       // WhatsApp-existence check — avoid fake "sent" for numbers not on WhatsApp
       let onWhatsApp = true;
       try {
-        const checks = await wa.socket.onWhatsApp(jid) || [];
+        const checks = await manager.socket.onWhatsApp(jid) || [];
         onWhatsApp = checks.some((c) => c && c.exists);
       } catch { /* treat as existing */ }
       if (!onWhatsApp) {
         throw new Error('Number not on WhatsApp');
       }
       if (imageBuffer) {
-        await wa.socket.sendMessage(jid, { image: imageBuffer, caption: finalMessage, mimetype: imageMimeType || 'image/jpeg' });
+        await manager.socket.sendMessage(jid, { image: imageBuffer, caption: finalMessage, mimetype: imageMimeType || 'image/jpeg' });
       } else {
-        await wa.socket.sendMessage(jid, { text: finalMessage });
+        await manager.socket.sendMessage(jid, { text: finalMessage });
       }
       console.log(`[campaign] Sent to ${name || jid}`);
       progress.sent++;
@@ -1066,8 +1141,9 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   console.log(`[campaign] Finished. Sent ${progress.sent}, failed ${progress.failed}, refunded ${progress.refunded}`);
 });
 
-// --- PROGRESS (includes countdown + ETA) ---
-app.get('/api/progress', (req, res) => {
+// --- PROGRESS (auth-scoped: each user only sees their own campaign) ---
+app.get('/api/progress', authMiddleware, (req, res) => {
+  const progress = getProgress(req.user.id);
   let nextSendIn = null;
   if (progress.running && progress.nextSendAt) {
     nextSendIn = Math.max(0, progress.nextSendAt - Date.now());
@@ -1088,16 +1164,41 @@ app.get('/api/progress', (req, res) => {
   });
 });
 
-// --- STATUS ---
-app.get('/api/status', (req, res) => {
-  res.json({
-    connected: wa.connected,
-    state: wa.state,
-    deviceNumber: wa.device?.number || null,
-    linkedByEmail: wa.device?.linkedByEmail || null,
-    linkedAt: wa.device?.linkedAt || null,
-    canReconnect: !wa.connected && !!wa.socket,
-  });
+// --- STATUS (privacy-safe) ---
+// Public (Render health checks): minimal, no identifying info. Authenticated:
+// returns only the requesting account's own device info.
+app.get('/api/status', async (req, res) => {
+  const status = {
+    connected: false,
+    state: 'unauthorized',
+    deviceNumber: null,
+    linkedByEmail: null,
+    linkedAt: null,
+    canReconnect: false,
+  };
+  try {
+    const header = req.headers.authorization;
+    if (header && header.startsWith('Bearer ')) {
+      const decoded = jwt.verify(header.split(' ')[1], JWT_SECRET);
+      const user = await getUserById(decoded.userId);
+      if (user) {
+        const manager = getManager(user.id);
+        // Lazy-connect the account's own session (no-op if a socket already
+        // exists, or if the user has never linked a phone).
+        if (await manager.hasStoredSession()) {
+          await manager.ensureSocket();
+        }
+        status.connected = manager.connected;
+        status.state = manager.state;
+        status.deviceNumber = manager.device?.number || null;
+        status.linkedByEmail = manager.device?.linkedByEmail || null;
+        status.linkedAt = manager.device?.linkedAt || null;
+        status.canReconnect = !manager.connected && !!manager.socket;
+        status.authorized = true;
+      }
+    }
+  } catch { /* fall through to generic status */ }
+  res.json(status);
 });
 
 // --- ADMIN ROUTES ---
@@ -1246,9 +1347,10 @@ app.listen(PORT, HOST, async () => {
   } catch (e) {
     console.error('[db] initDb failed:', e.message);
   }
-  // Start WhatsApp connection after server is listening (lazy-load Baileys)
+  // Auto-connect every account that already has a linked device (lazy-loads
+  // Baileys) after the server is listening.
   setTimeout(() => {
-    ensureWhatsApp().catch(e => {
+    connectAllDevices().catch(e => {
       console.error('[whatsapp] Init error:', e.message);
       console.error(e.stack);
     });
