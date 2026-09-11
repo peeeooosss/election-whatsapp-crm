@@ -106,11 +106,29 @@
       usersWrap.innerHTML = '<p class="text-muted text-center" style="padding:20px;">No users</p>';
       return;
     }
-    usersWrap.innerHTML = `<table><thead><tr><th>Name</th><th>Email</th><th>Credits</th><th>Joined</th></tr></thead><tbody>${
-      data.users.map(u => `<tr><td>${u.name}</td><td>${u.email}</td><td><strong>${u.credits}</strong></td><td>${new Date(u.createdAt).toLocaleDateString()}</td></tr>`).join('')
+    usersWrap.innerHTML = `<table><thead><tr><th>Name</th><th>Email</th><th>Credits</th><th>Joined</th><th>Adjust Credits</th></tr></thead><tbody>${
+      data.users.map(u => `<tr>
+        <td>${u.name}</td><td>${u.email}</td><td><strong>${u.credits}</strong></td><td>${new Date(u.createdAt).toLocaleDateString()}</td>
+        <td style="white-space:nowrap">
+          <input type="number" id="adj_${u.id}" min="1" placeholder="Amount" style="width:75px; padding:4px 6px; border:1px solid var(--border,#e2e8f0); border-radius:6px;">
+          <button class="btn btn-sm" style="background:var(--success,#16a34a); color:#fff;" onclick="adjustCredits('${u.id}', 1)">+ Add</button>
+          <button class="btn btn-sm" style="background:var(--danger,#dc2626); color:#fff;" onclick="adjustCredits('${u.id}', -1)">− Deduct</button>
+        </td>
+      </tr>`).join('')
     }</tbody></table>`;
     creditUserSelect.innerHTML = data.users.map(u => `<option value="${u.id}">${u.name} (${u.email}) — ${u.credits} credits</option>`).join('');
   }
+
+  window.adjustCredits = async (userId, dir) => {
+    const input = document.getElementById('adj_' + userId);
+    const amount = parseInt(input.value, 10);
+    if (!amount || amount <= 0) { alert('Enter a positive amount first'); return; }
+    const action = dir > 0 ? 'Add' : 'Deduct';
+    if (!confirm(`${action} ${amount} credits ${dir > 0 ? 'to' : 'from'} this user?`)) return;
+    const data = await api('/api/admin/add-credits', { method: 'POST', body: JSON.stringify({ userId, credits: dir > 0 ? amount : -amount }) });
+    if (data && data.success) { input.value = ''; refreshAll(); }
+    else alert(data?.error || 'Failed to adjust credits');
+  };
 
   // --- Manual Add Credits ---
   addCreditsBtn.onclick = async () => {

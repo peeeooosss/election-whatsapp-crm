@@ -52,7 +52,7 @@ const pool = new Pool({
   connectionString: dbUrl,
   ssl: { rejectUnauthorized: false },
   connectionTimeoutMillis: 10000,
-  max: 4,
+  max: 8,
 });
 
 pool.on('error', (err) => {
@@ -173,6 +173,16 @@ app.use((req, res, next) => {
 });
 app.use(express.static(PUBLIC_DIR));
 
+// Keep the process alive on stray async errors while logging them clearly. The
+// alternative (Node ≥15 default) is an instant crash, which silently kills any
+// running campaign and loses in-flight credits.
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] Unhandled rejection (kept alive):', reason instanceof Error ? reason.message : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[process] Uncaught exception (kept alive):', err.message);
+});
+
 // --- USER / TX / CAMPAIGN MAPPERS (snake_case columns -> API camelCase) ---
 const mapUser = (r) => r && ({
   id: r.id,
@@ -263,12 +273,26 @@ function getProgress(userId) {
       nextTarget: null,
       batchBreak: false,
       imageName: null,
+      aborted: false,
+      abortReason: null,
     };
   }
   return progressByUser[userId];
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Resolve a promise unless it takes longer than `ms` — guarantees a hang (e.g.
+// Baileys sendMessage on a degraded socket) can never freeze a campaign run.
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
 
 // Postgres-backed Baileys auth state: pairing survives Render redeploys.
 // Every key is namespaced by user id so each account owns an isolated WhatsApp
@@ -328,7 +352,10 @@ async function usePostgresAuthState(userId) {
           for (const category in data) {
             for (const id in data[category]) {
               const value = data[category][id];
-              const key = `${ns}${category}-${id}.json`;
+              // writeData/removeData already apply the namespace prefix — pass
+              // the bare key here or it gets double-prefixed (u<id>:u<id>:...) and
+              // Baileys can never find its stored keys again.
+              const key = `${category}-${id}.json`;
               tasks.push(value ? writeData(key, value) : removeData(key));
             }
           }
@@ -424,8 +451,12 @@ class WhatsAppManager {
     });
     this.socket = newSock;
     this.state = 'connecting';
-    newSock.ev.on('creds.update', saveCreds);
-    newSock.ev.on('connection.update', (update) => this.onConnectionUpdate(update));
+    // Wrap the async handlers so a failing DB write / handler can NEVER become
+    // an unhandled rejection that kills the whole process mid-campaign.
+    newSock.ev.on('creds.update', () => saveCreds().catch((e) => console.error('[whatsapp] saveCreds error:', e.message)));
+    newSock.ev.on('connection.update', (update) => {
+      this.onConnectionUpdate(update).catch((e) => console.error('[whatsapp] conn.update error:', e.message));
+    });
     return newSock;
   }
 
@@ -998,6 +1029,8 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   progress.nextTarget = null;
   progress.batchBreak = false;
   progress.imageName = typeof imageName === 'string' ? imageName : null;
+  progress.aborted = false;
+  progress.abortReason = null;
 
   res.json({
     success: true,
@@ -1042,76 +1075,117 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     return Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS + 1)) + MIN_DELAY_MS;
   };
 
-  for (let i = 0; i < list.length; i++) {
-    const target = list[i];
-    progress.currentIndex = i;
-    const next = (i + 1 < list.length) ? list[i + 1] : null;
-    progress.nextTarget = next
-      ? { name: next.Name || next.name || '—', phone: next.Phone || next.phone || '' }
-      : null;
-    progress.nextSendAt = null;
+  // --- SAFETY-NETTED CAMPAIGN LOOP ---
+  // Any crash (or a lost WhatsApp connection) aborts cleanly instead of dying
+  // silently: untouched credits are refunded, a partial result is persisted, and
+  // the running flag is always reset so the UI gets an accurate final status.
+  const messageTimeoutMs = 45000;
+  let abortReason = null;
+  try {
+    for (let i = 0; i < list.length; i++) {
+      if (!manager.connected) {
+        abortReason = 'WhatsApp disconnected';
+        progress.aborted = true;
+        progress.abortReason = abortReason;
+        break;
+      }
 
-    if (i > 0 && i % BATCH_SIZE === 0) {
-      console.log(`[campaign] Batch limit (${i}) reached. Pausing ${Math.round(BATCH_PAUSE_MS / 60000)} min...`);
-      progress.batchBreak = true;
-      progress.nextTarget = { name: target.Name || target.name || '—', phone: target.Phone || target.phone || '' };
-      progress.nextSendAt = Date.now() + BATCH_PAUSE_MS;
-      await sleep(BATCH_PAUSE_MS);
+      const target = list[i];
+      progress.currentIndex = i;
+      const next = (i + 1 < list.length) ? list[i + 1] : null;
+      progress.nextTarget = next
+        ? { name: next.Name || next.name || '—', phone: next.Phone || next.phone || '' }
+        : null;
       progress.nextSendAt = null;
-      progress.batchBreak = false;
-    }
 
-    let finalMessage = messageTemplate || '';
-    const name = target.Name || target.name || 'Supporter';
-    const dept = target.Department || target.department || 'Constituency';
-    const year = target.Year || target.year || '2024';
-    finalMessage = finalMessage.replace(/{Name}/g, name);
-    finalMessage = finalMessage.replace(/{Department}/g, dept);
-    finalMessage = finalMessage.replace(/{Year}/g, year);
+      if (i > 0 && i % BATCH_SIZE === 0) {
+        console.log(`[campaign] Batch limit (${i}) reached. Pausing ${Math.round(BATCH_PAUSE_MS / 60000)} min...`);
+        progress.batchBreak = true;
+        progress.nextTarget = { name: target.Name || target.name || '—', phone: target.Phone || target.phone || '' };
+        progress.nextSendAt = Date.now() + BATCH_PAUSE_MS;
+        await sleep(BATCH_PAUSE_MS);
+        progress.nextSendAt = null;
+        progress.batchBreak = false;
+        if (!manager.connected) {
+          abortReason = 'WhatsApp disconnected during batch break';
+          progress.aborted = true;
+          progress.abortReason = abortReason;
+          break;
+        }
+      }
 
-    const jid = normalizePhone(target.Phone || target.phone);
-    const result = { name, phone: target.Phone || target.phone, jid, status: 'sent' };
-    if (!jid) {
-      progress.failed++;
-      result.status = 'failed';
-      result.error = 'Invalid phone number';
-      results.push(result);
-      continue;
-    }
+      let finalMessage = messageTemplate || '';
+      const name = target.Name || target.name || 'Supporter';
+      const dept = target.Department || target.department || 'Constituency';
+      const year = target.Year || target.year || '2024';
+      finalMessage = finalMessage.replace(/{Name}/g, name);
+      finalMessage = finalMessage.replace(/{Department}/g, dept);
+      finalMessage = finalMessage.replace(/{Year}/g, year);
 
-    try {
-      // WhatsApp-existence check — avoid fake "sent" for numbers not on WhatsApp
-      let onWhatsApp = true;
+      const jid = normalizePhone(target.Phone || target.phone);
+      const result = { name, phone: target.Phone || target.phone, jid, status: 'sent' };
+      if (!jid) {
+        progress.failed++;
+        result.status = 'failed';
+        result.error = 'Invalid phone number';
+        results.push(result);
+        continue;
+      }
+
       try {
-        const checks = await manager.socket.onWhatsApp(jid) || [];
-        onWhatsApp = checks.some((c) => c && c.exists);
-      } catch { /* treat as existing */ }
-      if (!onWhatsApp) {
-        throw new Error('Number not on WhatsApp');
+        // WhatsApp-existence check — avoid fake "sent" for numbers not on WhatsApp
+        let onWhatsApp = true;
+        try {
+          const checks = await withTimeout(manager.socket.onWhatsApp(jid), messageTimeoutMs, 'onWhatsApp') || [];
+          onWhatsApp = checks.some((c) => c && c.exists);
+        } catch { /* treat as existing (or timed out) */ }
+        if (!onWhatsApp) {
+          throw new Error('Number not on WhatsApp');
+        }
+        const payload = imageBuffer
+          ? { image: imageBuffer, caption: finalMessage, mimetype: imageMimeType || 'image/jpeg' }
+          : { text: finalMessage };
+        await withTimeout(manager.socket.sendMessage(jid, payload), messageTimeoutMs, 'sendMessage');
+        console.log(`[campaign] Sent to ${name || jid}`);
+        progress.sent++;
+      } catch (err) {
+        console.error(`[campaign] Failed to send to ${jid}:`, err.message);
+        progress.failed++;
+        result.status = 'failed';
+        result.error = err.message;
+        // Auto-refund credit on failure (guarded so a DB hiccup can't crash us)
+        try {
+          await adjustCredits(user.id, 1);
+          progress.refunded++;
+        } catch (refundErr) {
+          console.error('[campaign] Refund failed (retried in cleanup):', refundErr.message);
+        }
       }
-      if (imageBuffer) {
-        await manager.socket.sendMessage(jid, { image: imageBuffer, caption: finalMessage, mimetype: imageMimeType || 'image/jpeg' });
-      } else {
-        await manager.socket.sendMessage(jid, { text: finalMessage });
-      }
-      console.log(`[campaign] Sent to ${name || jid}`);
-      progress.sent++;
-    } catch (err) {
-      console.error(`[campaign] Failed to send to ${jid}:`, err.message);
-      progress.failed++;
-      result.status = 'failed';
-      result.error = err.message;
-      // Auto-refund credit on failure
-      await adjustCredits(user.id, 1);
-      progress.refunded++;
-    }
-    results.push(result);
+      results.push(result);
 
-    if (i < list.length - 1) {
-      const delay = delayFor(i);
-      progress.nextSendAt = Date.now() + delay;
-      await sleep(delay);
-      progress.nextSendAt = null;
+      if (i < list.length - 1) {
+        const delay = delayFor(i);
+        progress.nextSendAt = Date.now() + delay;
+        await sleep(delay);
+        progress.nextSendAt = null;
+      }
+    }
+  } catch (err) {
+    abortReason = err.message || 'Campaign unexpectedly failed';
+    progress.aborted = true;
+    progress.abortReason = abortReason;
+    console.error('[campaign] Campaign aborted:', abortReason);
+  }
+
+  // --- ALWAYS-ON CLEANUP: refund untouched credits + persist partial result ---
+  const untouched = list.length - (progress.sent + progress.failed);
+  if (untouched > 0) {
+    try {
+      await adjustCredits(user.id, untouched);
+      progress.refunded += untouched;
+      console.log(`[campaign] Refunded ${untouched} untouched credits.`);
+    } catch (refundErr) {
+      console.error('[campaign] Bulk refund failed:', refundErr.message);
     }
   }
 
@@ -1120,11 +1194,11 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   await insertTransaction({
     id: Date.now().toString(36),
     userId: user.id,
-    type: 'campaign_complete',
+    type: progress.aborted ? 'campaign_aborted' : 'campaign_complete',
     credits: 0,
     label: campaignId,
-    note: `Sent: ${progress.sent}, Failed: ${progress.failed}, Refunded: ${progress.refunded}`,
-    status: 'completed',
+    note: `Sent: ${progress.sent}, Failed: ${progress.failed}, Refunded: ${progress.refunded}${progress.aborted ? ` | Stopped: ${abortReason}` : ''}`,
+    status: progress.aborted ? 'refunded' : 'completed',
     createdAt: new Date().toISOString(),
   });
 
@@ -1138,7 +1212,11 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   progress.nextTarget = null;
   progress.batchBreak = false;
   progress.imageName = null;
-  console.log(`[campaign] Finished. Sent ${progress.sent}, failed ${progress.failed}, refunded ${progress.refunded}`);
+  if (progress.aborted) {
+    console.log(`[campaign] Stopped early. Sent ${progress.sent}, failed ${progress.failed}, refunded ${progress.refunded}. Reason: ${abortReason}`);
+  } else {
+    console.log(`[campaign] Finished. Sent ${progress.sent}, failed ${progress.failed}, refunded ${progress.refunded}`);
+  }
 });
 
 // --- PROGRESS (auth-scoped: each user only sees their own campaign) ---
@@ -1273,8 +1351,8 @@ app.post('/api/admin/add-credits', authMiddleware, adminMiddleware, async (req, 
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
-  if (!Number.isInteger(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'Credits must be a positive whole number' });
+  if (!Number.isInteger(amount) || amount === 0) {
+    return res.status(400).json({ error: 'Credits must be a non-zero whole number (positive to add, negative to deduct)' });
   }
   const client = await pool.connect();
   try {
@@ -1286,7 +1364,8 @@ app.post('/api/admin/add-credits', authMiddleware, adminMiddleware, async (req, 
       [Date.now().toString(36) + Math.random().toString(36).slice(2, 6), user.id, 'credit_add', amount, 'Manual credit', note ? `Manual credit: ${note}` : 'Manual credit from admin', 'approved', user.name, user.email, req.user.email]
     );
     await client.query('COMMIT');
-    res.json({ success: true, message: `Added ${amount} credits to ${user.email}. New balance: ${newBalance}`, newBalance });
+    const action = amount > 0 ? 'Added' : 'Deducted';
+    res.json({ success: true, message: `${action} ${Math.abs(amount)} credits ${amount > 0 ? 'to' : 'from'} ${user.email}. New balance: ${newBalance}`, newBalance });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('[admin] add-credits failed:', err.message);
@@ -1348,8 +1427,13 @@ app.listen(PORT, HOST, async () => {
     console.error('[db] initDb failed:', e.message);
   }
   // Auto-connect every account that already has a linked device (lazy-loads
-  // Baileys) after the server is listening.
+  // Baileys) after the server is listening. Set CONNECT_DEVICES=false to skip
+  // (useful for boot-testing without stealing live WhatsApp links).
   setTimeout(() => {
+    if (process.env.CONNECT_DEVICES === 'false') {
+      console.log('[whatsapp] Device auto-connect skipped (CONNECT_DEVICES=false)');
+      return;
+    }
     connectAllDevices().catch(e => {
       console.error('[whatsapp] Init error:', e.message);
       console.error(e.stack);

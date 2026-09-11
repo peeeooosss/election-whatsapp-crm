@@ -375,9 +375,17 @@
       clearInterval(progressTimer);
       progressTimer = null;
       startBtn.disabled = false;
-      campaignStatus.className = 'status-bar success';
-      campaignStatusText.textContent = `Done! Sent: ${data.sent}, Failed: ${data.failed}, Refunded: ${data.refunded}`;
-      campaignProgressDetail.style.display = 'none';
+      if (data.aborted) {
+        campaignStatus.className = 'status-bar error';
+        const reason = data.abortReason || 'Campaign paused';
+        campaignStatusText.textContent = `⚠ Paused — ${reason}. Sent: ${data.sent}, Failed: ${data.failed}, Refunded: ${data.refunded}`;
+        campaignProgressDetail.style.display = 'block';
+        campaignProgressDetail.innerHTML = `<strong>⚠ Campaign ${data.aborted ? 'stopped' : 'paused'}</strong><br>${reason}<br><strong>Sent:</strong> ${data.sent}/${data.total} &nbsp;|&nbsp; <strong>Failed:</strong> ${data.failed} &nbsp;|&nbsp; <strong>Refunded:</strong> ${data.refunded}<br>Unused credits have been refunded to your balance. Re-link WhatsApp on the Settings page, then start a new campaign.`;
+      } else {
+        campaignStatus.className = 'status-bar success';
+        campaignStatusText.textContent = `Done! Sent: ${data.sent}, Failed: ${data.failed}, Refunded: ${data.refunded}`;
+        campaignProgressDetail.style.display = 'none';
+      }
       refreshProgressBtn.style.display = 'none';
       loadProfile();
       msgHistoryLoaded = false;
