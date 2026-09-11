@@ -69,11 +69,22 @@
             <button class="tag-btn" data-tag="{Year}">[+ Year]</button>
         </div>
         <textarea id="messageTemplate" placeholder="Hello {Name}, this is a reminder for the upcoming election in {Department}..."></textarea>
+        <div class="image-picker">
+            <label class="btn btn-secondary" style="width:auto; cursor:pointer; margin-right:8px;">🖼️ Add Image (optional)
+                <input type="file" id="campaignImage" accept="image/*" style="display:none;">
+            </label>
+            <span id="imageStatus" class="text-muted" style="font-size:0.85em;">No image selected — messages will be text-only.</span>
+        </div>
+        <div id="imagePreview" style="display:none; margin-top:10px;">
+            <img id="imagePreviewImg" alt="Campaign image preview" style="max-width:220px; max-height:140px; border-radius:8px; border:1px solid var(--border,#e2e8f0);">
+            <button class="btn btn-secondary" id="removeImageBtn" style="width:auto; margin-left:8px; padding:2px 10px; font-size:0.85em;">Remove</button>
+        </div>
         <button class="btn btn-success" id="startBtn" style="font-size:1.1em; margin-top:12px;">🚀 Start Campaign</button>
         <div id="campaignStatus" class="status-bar" style="display:none;">
             <span id="campaignStatusText"></span>
             <button class="btn btn-secondary" id="refreshProgressBtn" style="display:none; margin-left:8px; padding:2px 10px; font-size:0.85em;">↻ Refresh</button>
         </div>
+        <div id="campaignProgressDetail" style="display:none; margin-top:10px; font-size:0.9em; line-height:1.8; background:rgba(39,174,96,0.06); border:1px solid var(--border,#e2e8f0); border-radius:8px; padding:10px 12px;"></div>
     </div>
 
     <!-- Section 3: Buy Credits -->

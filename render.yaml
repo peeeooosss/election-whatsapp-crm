@@ -16,19 +16,19 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: MIN_DELAY_MS
-        value: "20000"
+        value: "18000"
       - key: MAX_DELAY_MS
-        value: "35000"
+        value: "30000"
       - key: WARMUP_SEND_COUNT
-        value: "15"
+        value: "5"
       - key: WARMUP_MIN_DELAY_MS
         value: "45000"
       - key: WARMUP_MAX_DELAY_MS
-        value: "60000"
+        value: "45000"
       - key: BATCH_SIZE
-        value: "50"
+        value: "100"
       - key: BATCH_PAUSE_MS
-        value: "900000"
+        value: "540000"
       - key: DAILY_MAX_MSG
         value: "600"
       - key: LOG_LEVEL

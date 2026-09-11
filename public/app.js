@@ -60,6 +60,12 @@
   const whatsappLink = document.getElementById('whatsappLink');
   const campaignStatusText = document.getElementById('campaignStatusText');
   const refreshProgressBtn = document.getElementById('refreshProgressBtn');
+  const campaignProgressDetail = document.getElementById('campaignProgressDetail');
+  const campaignImage = document.getElementById('campaignImage');
+  const imageStatus = document.getElementById('imageStatus');
+  const imagePreview = document.getElementById('imagePreview');
+  const imagePreviewImg = document.getElementById('imagePreviewImg');
+  const removeImageBtn = document.getElementById('removeImageBtn');
 
   // --- State ---
   let allData = [];
@@ -69,6 +75,35 @@
   let minQty = 100;
   let maxQty = 1000;
   let adminWhatsApp = '';
+  let selectedImageBase64 = null;
+  let selectedImageName = null;
+
+  // --- Image picker (optional campaign image; session-only) ---
+  campaignImage.onchange = () => {
+    const file = campaignImage.files[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { alert('Image too large. Max 8 MB.'); campaignImage.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      selectedImageBase64 = e.target.result;
+      selectedImageName = file.name;
+      imagePreviewImg.src = selectedImageBase64;
+      imagePreview.style.display = 'block';
+      imageStatus.textContent = `Image: ${file.name} (${(file.size / 1024).toFixed(0)} KB) — will be sent above your message.`;
+      imageStatus.style.color = 'var(--success,#27ae60)';
+    };
+    reader.readAsDataURL(file);
+  };
+
+  removeImageBtn.onclick = () => {
+    selectedImageBase64 = null;
+    selectedImageName = null;
+    campaignImage.value = '';
+    imagePreview.style.display = 'none';
+    imagePreviewImg.src = '';
+    imageStatus.textContent = 'No image selected — messages will be text-only.';
+    imageStatus.style.color = '';
+  };
 
   // --- Profile ---
   async function loadProfile() {
@@ -301,11 +336,17 @@
     campaignStatus.style.display = 'block';
     campaignStatus.className = 'status-bar info';
     campaignStatusText.textContent = 'Starting campaign...';
+    campaignProgressDetail.style.display = 'none';
     refreshProgressBtn.style.display = 'none';
 
     const res = await api('/api/send-bulk', {
       method: 'POST',
-      body: JSON.stringify({ targets: filteredData, messageTemplate: messageTemplate.value }),
+      body: JSON.stringify({
+        targets: filteredData,
+        messageTemplate: messageTemplate.value,
+        base64Image: selectedImageBase64,
+        imageName: selectedImageName,
+      }),
     });
 
     if (res && res.success) {
@@ -321,6 +362,14 @@
     }
   };
 
+  function fmtSeconds(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return `~${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `~${m}m ${rem}s`;
+  }
+
   async function pollProgress() {
     const data = await api('/api/progress');
     if (!data) return;
@@ -330,6 +379,7 @@
       startBtn.disabled = false;
       campaignStatus.className = 'status-bar success';
       campaignStatusText.textContent = `Done! Sent: ${data.sent}, Failed: ${data.failed}, Refunded: ${data.refunded}`;
+      campaignProgressDetail.style.display = 'none';
       refreshProgressBtn.style.display = 'none';
       loadProfile();
       msgHistoryLoaded = false;
@@ -338,17 +388,28 @@
       return;
     }
     const pct = data.total ? Math.round((data.sent / data.total) * 100) : 0;
-    let extra = '';
-    if (data.nextSendIn != null) {
-      const secs = Math.max(0, Math.round(data.nextSendIn / 1000));
-      extra += ` | Next msg in: ~${secs}s`;
+    campaignStatus.className = 'status-bar info';
+    campaignStatusText.textContent = `Campaign running — message ${data.currentIndex + 1}/${data.total} (${pct}%)`;
+
+    const lines = [];
+    lines.push(`<strong>Sent:</strong> ${data.sent}/${data.total} (${pct}%) &nbsp;|&nbsp; <strong>Failed:</strong> ${data.failed} &nbsp;|&nbsp; <strong>Refunded:</strong> ${data.refunded}`);
+    if (selectedImageName || data.imageName) {
+      lines.push(`<strong>Image:</strong> ${data.imageName || selectedImageName}`);
+    }
+    if (data.batchBreak) {
+      lines.push(`<strong>⏸ Batch break</strong> (9 min pause after every 100 messages) — resuming in ${data.nextSendIn != null ? fmtSeconds(data.nextSendIn) : '…'}`);
+    }
+    if (data.nextTarget && data.nextTarget.phone) {
+      lines.push(`<strong>Next message sent to:</strong> ${data.nextTarget.name || '—'} (${data.nextTarget.phone})`);
+    }
+    if (data.nextSendIn != null && !data.batchBreak) {
+      lines.push(`<strong>Next message in:</strong> ${fmtSeconds(data.nextSendIn)}`);
     }
     if (data.etaMs != null) {
-      const mins = Math.max(0, Math.ceil(data.etaMs / 60000));
-      extra += ` | Time left: ~${mins}min`;
+      lines.push(`<strong>Estimated time left:</strong> ~${Math.max(1, Math.ceil(data.etaMs / 60000))} min`);
     }
-    campaignStatus.className = 'status-bar info';
-    campaignStatusText.textContent = `Sending ${data.sent}/${data.total} (${pct}%) | Failed: ${data.failed} | Refunded: ${data.refunded}${extra}`;
+    campaignProgressDetail.style.display = 'block';
+    campaignProgressDetail.innerHTML = lines.join('<br>');
   }
 
   refreshProgressBtn.onclick = () => {
@@ -527,6 +588,7 @@
         campaignStatus.style.display = 'block';
         campaignStatus.className = 'status-bar info';
         campaignStatusText.textContent = 'Reconnecting to campaign...';
+        campaignProgressDetail.style.display = 'block';
         refreshProgressBtn.style.display = 'inline-block';
         pollProgress();
         if (progressTimer) clearInterval(progressTimer);

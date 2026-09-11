@@ -20,13 +20,13 @@ function baileys() {
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
 const DEFAULT_COUNTRY_CODE = String(process.env.DEFAULT_COUNTRY_CODE || '91');
-const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 20000);
-const MAX_DELAY_MS = Number(process.env.MAX_DELAY_MS || 35000);
-const WARMUP_SEND_COUNT = Number(process.env.WARMUP_SEND_COUNT || 15);
+const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 18000);
+const MAX_DELAY_MS = Number(process.env.MAX_DELAY_MS || 30000);
+const WARMUP_SEND_COUNT = Number(process.env.WARMUP_SEND_COUNT || 5);
 const WARMUP_MIN_DELAY_MS = Number(process.env.WARMUP_MIN_DELAY_MS || 45000);
-const WARMUP_MAX_DELAY_MS = Number(process.env.WARMUP_MAX_DELAY_MS || 60000);
-const BATCH_SIZE = Number(process.env.BATCH_SIZE || 50);
-const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 15 * 60 * 1000);
+const WARMUP_MAX_DELAY_MS = Number(process.env.WARMUP_MAX_DELAY_MS || 45000);
+const BATCH_SIZE = Number(process.env.BATCH_SIZE || 100);
+const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 9 * 60 * 1000);
 const DAILY_MAX_MSG = Number(process.env.DAILY_MAX_MSG || 600);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
@@ -220,6 +220,9 @@ const progress = {
   currentIndex: 0,
   startedAt: null,
   nextSendAt: null,
+  nextTarget: null,
+  batchBreak: false,
+  imageName: null,
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -850,7 +853,7 @@ app.post('/api/disconnect', authMiddleware, async (req, res) => {
 
 // --- SEND BULK (credit-checked) ---
 app.post('/api/send-bulk', authMiddleware, async (req, res) => {
-  const { targets, messageTemplate } = req.body || {};
+  const { targets, messageTemplate, base64Image, imageName } = req.body || {};
   const list = Array.isArray(targets) ? targets : [];
 
   if (!wa.ready) {
@@ -917,6 +920,9 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   progress.refunded = 0;
   progress.currentIndex = 0;
   progress.startedAt = new Date();
+  progress.nextTarget = null;
+  progress.batchBreak = false;
+  progress.imageName = typeof imageName === 'string' ? imageName : null;
 
   res.json({
     success: true,
@@ -929,7 +935,31 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   const results = [];
   const campaignId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-  // Conservative pacing helper: slow warm-up for first few messages, then steady 20-35s.
+  // Optional campaign image: decoded ONCE and reused for every recipient so RAM
+  // cost is just a single buffer (~1-5MB). Falls back to text-only on any error.
+  const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+  let imageBuffer = null;
+  let imageMimeType = null;
+  const rawImage = typeof base64Image === 'string' ? base64Image.trim() : '';
+  if (rawImage) {
+    try {
+      const mimeMatch = rawImage.match(/^data:([^;,]+);base64,/);
+      imageMimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+      const b64 = rawImage.replace(/^data:[^;]+;base64,/, '');
+      const buf = Buffer.from(b64, 'base64');
+      if (buf.length === 0) throw new Error('empty image data');
+      if (buf.length > MAX_IMAGE_BYTES) throw new Error('image larger than 8MB');
+      imageBuffer = buf;
+      console.log(`[campaign] Image attached: ${imageName || 'image'} (${(buf.length / 1024 / 1024).toFixed(2)} MB, ${imageMimeType})`);
+    } catch (imgErr) {
+      console.error('[campaign] Image invalid, sending text-only:', imgErr.message);
+      imageBuffer = null;
+      imageMimeType = null;
+      progress.imageName = null;
+    }
+  }
+
+  // Conservative pacing helper: slow warm-up for first messages, then steady 18-30s.
   const delayFor = (index) => {
     if (index < WARMUP_SEND_COUNT) {
       return Math.floor(Math.random() * (WARMUP_MAX_DELAY_MS - WARMUP_MIN_DELAY_MS + 1)) + WARMUP_MIN_DELAY_MS;
@@ -940,11 +970,20 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   for (let i = 0; i < list.length; i++) {
     const target = list[i];
     progress.currentIndex = i;
+    const next = (i + 1 < list.length) ? list[i + 1] : null;
+    progress.nextTarget = next
+      ? { name: next.Name || next.name || '—', phone: next.Phone || next.phone || '' }
+      : null;
     progress.nextSendAt = null;
 
     if (i > 0 && i % BATCH_SIZE === 0) {
       console.log(`[campaign] Batch limit (${i}) reached. Pausing ${Math.round(BATCH_PAUSE_MS / 60000)} min...`);
+      progress.batchBreak = true;
+      progress.nextTarget = { name: target.Name || target.name || '—', phone: target.Phone || target.phone || '' };
+      progress.nextSendAt = Date.now() + BATCH_PAUSE_MS;
       await sleep(BATCH_PAUSE_MS);
+      progress.nextSendAt = null;
+      progress.batchBreak = false;
     }
 
     let finalMessage = messageTemplate || '';
@@ -975,7 +1014,11 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
       if (!onWhatsApp) {
         throw new Error('Number not on WhatsApp');
       }
-      await wa.socket.sendMessage(jid, { text: finalMessage });
+      if (imageBuffer) {
+        await wa.socket.sendMessage(jid, { image: imageBuffer, caption: finalMessage, mimetype: imageMimeType || 'image/jpeg' });
+      } else {
+        await wa.socket.sendMessage(jid, { text: finalMessage });
+      }
       console.log(`[campaign] Sent to ${name || jid}`);
       progress.sent++;
     } catch (err) {
@@ -1017,6 +1060,9 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   );
 
   progress.running = false;
+  progress.nextTarget = null;
+  progress.batchBreak = false;
+  progress.imageName = null;
   console.log(`[campaign] Finished. Sent ${progress.sent}, failed ${progress.failed}, refunded ${progress.refunded}`);
 });
 
