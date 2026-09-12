@@ -18,13 +18,13 @@ services:
       - key: MIN_DELAY_MS
         value: "18000"
       - key: MAX_DELAY_MS
-        value: "30000"
+        value: "25000"
       - key: WARMUP_SEND_COUNT
         value: "5"
       - key: WARMUP_MIN_DELAY_MS
-        value: "45000"
+        value: "35000"
       - key: WARMUP_MAX_DELAY_MS
-        value: "45000"
+        value: "40000"
       - key: BATCH_SIZE
         value: "100"
       - key: BATCH_PAUSE_MS
