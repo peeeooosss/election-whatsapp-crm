@@ -28,6 +28,15 @@ const WARMUP_MAX_DELAY_MS = Number(process.env.WARMUP_MAX_DELAY_MS || 25000);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE || 200);
 const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 3 * 60 * 1000);
 const DAILY_MAX_MSG = Number(process.env.DAILY_MAX_MSG || 5000);
+const LOG_LEVEL = String(process.env.LOG_LEVEL || 'silent');
+
+// Baileys logger: controls all the WhatsApp library's internal log output
+// ("Session error: Bad MAC", reconnect notices, etc.). 'silent' (default)
+// suppresses it entirely. Use 'warn'/'error' to keep only real problems.
+const baileysLogger = require('pino')({
+  level: LOG_LEVEL === 'silent' ? 'silent' : LOG_LEVEL,
+  timestamp: () => `,"time":"${new Date().toJSON()}"`,
+});
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
 const ADMIN_FALLBACKS = ['piyushbhuyan71@gmail.com'];
@@ -449,6 +458,7 @@ class WhatsAppManager {
     const newSock = makeWASocket({
       printQRInTerminal: false,
       auth: state,
+      logger: baileysLogger,
       browser: Browsers.ubuntu('Chrome'),
     });
     this.socket = newSock;
