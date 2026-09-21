@@ -256,21 +256,38 @@
   fileInput.onchange = () => {
     const file = fileInput.files[0];
     if (!file) return;
+    if (typeof XLSX === 'undefined') {
+      alert('The Excel reader library failed to load from its CDN. Check your internet connection and reload the page, then try again.');
+      return;
+    }
     const reader = new FileReader();
     reader.onload = async (e) => {
-      const data = new Uint8Array(e.target.result);
-      const wb = XLSX.read(data, { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      allData = XLSX.utils.sheet_to_json(ws).map(row => {
-        const nr = {};
-        Object.keys(row).forEach(k => { nr[k.trim()] = row[k]; });
-        return nr;
-      });
-      if (!allData.length) { alert('No rows found'); return; }
-      showResults();
+      let wb;
+      try {
+        const data = new Uint8Array(e.target.result);
+        wb = XLSX.read(data, { type: 'array' });
+      } catch (err) {
+        alert(`Couldn't read this file — is it a valid .xlsx / .xls? (${err.message})`);
+        return;
+      }
+      try {
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        allData = XLSX.utils.sheet_to_json(ws).map(row => {
+          const nr = {};
+          Object.keys(row).forEach(k => { nr[k.trim()] = row[k]; });
+          return nr;
+        });
+      } catch (err) {
+        alert(`Couldn't parse the Excel data — the file may be corrupted. (${err.message})`);
+        return;
+      }
+      if (!allData.length) { alert('No rows found in this file.'); return; }
+      showResults(true);
       removeExcelBtn.style.display = 'inline-block';
       // Persist to server so data survives refresh
-      await api('/api/voters', { method: 'POST', body: JSON.stringify({ name: file.name, data: allData }) });
+      try {
+        await api('/api/voters', { method: 'POST', body: JSON.stringify({ name: file.name, data: allData }) });
+      } catch { /* persist failure is non-fatal; table still shown */ }
     };
     reader.readAsArrayBuffer(file);
   };
@@ -297,7 +314,7 @@
     } catch { /* non-fatal */ }
   }
 
-  function showResults() {
+  function showResults(flash) {
     crmSearch.value = '';
     crmDeptFilter.value = '';
     crmYearFilter.value = '';
@@ -305,6 +322,27 @@
     window._crmRender = renderTable;
     renderTable();
     crmSection.style.display = 'block';
+    if (flash) {
+      crmSection.classList.add('flash-highlight');
+      setTimeout(() => crmSection.classList.remove('flash-highlight'), 1800);
+      crmSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      showLoadNote(`✅ Loaded ${allData.length} voters`);
+    }
+  }
+
+  // Transient confirmation next to the row count after a successful upload.
+  function showLoadNote(msg) {
+    let note = document.getElementById('loadNote');
+    if (!note) {
+      note = document.createElement('span');
+      note.id = 'loadNote';
+      note.style.cssText = 'margin-left:12px; font-size:0.85em; color:var(--success); font-weight:600;';
+      rowCount.parentNode.insertBefore(note, rowCount.nextSibling);
+    }
+    note.textContent = msg;
+    note.style.display = '';
+    clearTimeout(note._timer);
+    note._timer = setTimeout(() => { note.style.display = 'none'; }, 3500);
   }
 
   function collectColumns() {
