@@ -1464,6 +1464,7 @@ app.listen(PORT, HOST, async () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
   console.log(`Default country code: +${DEFAULT_COUNTRY_CODE}`);
   console.log(`Admin email: ${ADMIN_EMAIL || '(set via fallbacks)'}`);
+  console.log(`[config] Pacing: warmup=${WARMUP_SEND_COUNT}msgs@${WARMUP_MIN_DELAY_MS}-${WARMUP_MAX_DELAY_MS}ms, steady=${MIN_DELAY_MS}-${MAX_DELAY_MS}ms, batch=${BATCH_SIZE}msgs/${Math.round(BATCH_PAUSE_MS/60000)}min, dailyMax=${DAILY_MAX_MSG}`);
   try {
     await initDb();
   } catch (e) {
