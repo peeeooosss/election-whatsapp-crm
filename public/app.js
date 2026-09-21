@@ -66,6 +66,8 @@
   const imagePreview = document.getElementById('imagePreview');
   const imagePreviewImg = document.getElementById('imagePreviewImg');
   const removeImageBtn = document.getElementById('removeImageBtn');
+  const delaySelect = document.getElementById('delaySelect');
+  const stopBtn = document.getElementById('stopBtn');
 
   // --- State ---
   let allData = [];
@@ -331,12 +333,16 @@
     if (!confirm(`Send to ${filteredData.length} people? This will take time due to anti-ban delays.`)) return;
 
     startBtn.disabled = true;
+    stopBtn.style.display = 'inline-block';
+    stopBtn.disabled = false;
+    stopBtn.textContent = '⏹ Stop Sending';
     campaignStatus.style.display = 'block';
     campaignStatus.className = 'status-bar info';
     campaignStatusText.textContent = 'Starting campaign...';
     campaignProgressDetail.style.display = 'none';
     refreshProgressBtn.style.display = 'none';
 
+    const delayMs = parseInt(delaySelect.value, 10);
     const res = await api('/api/send-bulk', {
       method: 'POST',
       body: JSON.stringify({
@@ -344,6 +350,7 @@
         messageTemplate: messageTemplate.value,
         base64Image: selectedImageBase64,
         imageName: selectedImageName,
+        delayMs,
       }),
     });
 
@@ -356,7 +363,24 @@
       campaignStatus.className = 'status-bar error';
       campaignStatusText.textContent = res?.error || 'Failed to start campaign';
       startBtn.disabled = false;
+      stopBtn.style.display = 'none';
       refreshProgressBtn.style.display = 'none';
+    }
+  };
+
+  // --- Stop Campaign ---
+  stopBtn.onclick = async () => {
+    if (!confirm('Stop the campaign? Current message will finish, then sending stops. Unused credits will be refunded.')) return;
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'Stopping...';
+    const res = await api('/api/stop-campaign', { method: 'POST' });
+    if (res && res.success) {
+      campaignStatusText.textContent = 'Stop requested — waiting for current message to finish...';
+      // Keep polling until campaign actually stops
+    } else {
+      alert(res?.message || 'Failed to stop campaign');
+      stopBtn.disabled = false;
+      stopBtn.textContent = '⏹ Stop Sending';
     }
   };
 
@@ -375,12 +399,13 @@
       clearInterval(progressTimer);
       progressTimer = null;
       startBtn.disabled = false;
+      stopBtn.style.display = 'none';
       if (data.aborted) {
         campaignStatus.className = 'status-bar error';
         const reason = data.abortReason || 'Campaign paused';
         campaignStatusText.textContent = `⚠ Paused — ${reason}. Sent: ${data.sent}, Failed: ${data.failed}, Refunded: ${data.refunded}`;
         campaignProgressDetail.style.display = 'block';
-        campaignProgressDetail.innerHTML = `<strong>⚠ Campaign ${data.aborted ? 'stopped' : 'paused'}</strong><br>${reason}<br><strong>Sent:</strong> ${data.sent}/${data.total} &nbsp;|&nbsp; <strong>Failed:</strong> ${data.failed} &nbsp;|&nbsp; <strong>Refunded:</strong> ${data.refunded}<br>Unused credits have been refunded to your balance. Re-link WhatsApp on the Settings page, then start a new campaign.`;
+        campaignProgressDetail.innerHTML = `<strong>⚠ Campaign ${data.aborted ? 'stopped' : 'paused'}</strong><br>${reason}<br><strong>Sent:</strong> ${data.sent}/${data.total} &nbsp;|&nbsp; <strong>Failed:</strong> ${data.failed} &nbsp;|&nbsp; <strong>Refunded:</strong> ${data.refunded}<br>Unused credits have been refunded to your balance. Check History for sent numbers — re-upload filtered Excel to continue.`;
       } else {
         campaignStatus.className = 'status-bar success';
         campaignStatusText.textContent = `Done! Sent: ${data.sent}, Failed: ${data.failed}, Refunded: ${data.refunded}`;
@@ -395,20 +420,22 @@
     }
     const pct = data.total ? Math.round((data.sent / data.total) * 100) : 0;
     campaignStatus.className = 'status-bar info';
-    campaignStatusText.textContent = `Campaign running — message ${data.currentIndex + 1}/${data.total} (${pct}%)`;
+    const phaseLabels = { warmup: '🔥 Warmup', steady: '⚡ Steady', batch_break: '⏸ Batch Break', stopping: '🛑 Stopping', idle: '' };
+    const phaseLabel = phaseLabels[data.phase] || '';
+    campaignStatusText.textContent = `${phaseLabel} — message ${data.currentIndex + 1}/${data.total} (${pct}%)`;
 
     const lines = [];
-    lines.push(`<strong>Sent:</strong> ${data.sent}/${data.total} (${pct}%) &nbsp;|&nbsp; <strong>Failed:</strong> ${data.failed} &nbsp;|&nbsp; <strong>Refunded:</strong> ${data.refunded}`);
+    lines.push(`<strong>Phase:</strong> ${phaseLabel || '—'} &nbsp;|&nbsp; <strong>Sent:</strong> ${data.sent}/${data.total} (${pct}%) &nbsp;|&nbsp; <strong>Failed:</strong> ${data.failed} &nbsp;|&nbsp; <strong>Refunded:</strong> ${data.refunded}`);
     if (selectedImageName || data.imageName) {
       lines.push(`<strong>Image:</strong> ${data.imageName || selectedImageName}`);
     }
-    if (data.batchBreak) {
-      lines.push(`<strong>⏸ Batch break</strong> (9 min pause after every 100 messages) — resuming in ${data.nextSendIn != null ? fmtSeconds(data.nextSendIn) : '…'}`);
+    if (data.batchBreak || data.phase === 'batch_break') {
+      lines.push(`<strong>⏸ Batch break</strong> (3 min pause after every 200 messages) — resuming in ${data.nextSendIn != null ? fmtSeconds(data.nextSendIn) : '…'}`);
     }
     if (data.nextTarget && data.nextTarget.phone) {
       lines.push(`<strong>Next message sent to:</strong> ${data.nextTarget.name || '—'} (${data.nextTarget.phone})`);
     }
-    if (data.nextSendIn != null && !data.batchBreak) {
+    if (data.nextSendIn != null && !data.batchBreak && data.phase !== 'batch_break') {
       lines.push(`<strong>Next message in:</strong> ${fmtSeconds(data.nextSendIn)}`);
     }
     if (data.etaMs != null) {

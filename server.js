@@ -20,14 +20,14 @@ function baileys() {
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
 const DEFAULT_COUNTRY_CODE = String(process.env.DEFAULT_COUNTRY_CODE || '91');
-const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 18000);
-const MAX_DELAY_MS = Number(process.env.MAX_DELAY_MS || 25000);
-  const WARMUP_SEND_COUNT = Number(process.env.WARMUP_SEND_COUNT || 5);
-  const WARMUP_MIN_DELAY_MS = Number(process.env.WARMUP_MIN_DELAY_MS || 35000);
-  const WARMUP_MAX_DELAY_MS = Number(process.env.WARMUP_MAX_DELAY_MS || 40000);
-const BATCH_SIZE = Number(process.env.BATCH_SIZE || 100);
-const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 9 * 60 * 1000);
-const DAILY_MAX_MSG = Number(process.env.DAILY_MAX_MSG || 600);
+const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 15000);
+const MAX_DELAY_MS = Number(process.env.MAX_DELAY_MS || 20000);
+const WARMUP_SEND_COUNT = Number(process.env.WARMUP_SEND_COUNT || 10);
+const WARMUP_MIN_DELAY_MS = Number(process.env.WARMUP_MIN_DELAY_MS || 20000);
+const WARMUP_MAX_DELAY_MS = Number(process.env.WARMUP_MAX_DELAY_MS || 25000);
+const BATCH_SIZE = Number(process.env.BATCH_SIZE || 200);
+const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 3 * 60 * 1000);
+const DAILY_MAX_MSG = Number(process.env.DAILY_MAX_MSG || 5000);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
 const ADMIN_FALLBACKS = ['piyushbhuyan71@gmail.com'];
@@ -275,6 +275,8 @@ function getProgress(userId) {
       imageName: null,
       aborted: false,
       abortReason: null,
+      phase: 'idle',
+      stopRequested: false,
     };
   }
   return progressByUser[userId];
@@ -957,11 +959,17 @@ app.post('/api/disconnect', authMiddleware, async (req, res) => {
 
 // --- SEND BULK (credit-checked, per-user device) ---
 app.post('/api/send-bulk', authMiddleware, async (req, res) => {
-  const { targets, messageTemplate, base64Image, imageName } = req.body || {};
+  const { targets, messageTemplate, base64Image, imageName, delayMs } = req.body || {};
   const list = Array.isArray(targets) ? targets : [];
   const user = req.user;
   const manager = getManager(user.id);
   const progress = getProgress(user.id);
+
+  // Override delays if provided (per-campaign user selection)
+  const minDelay = Number.isFinite(delayMs) ? Math.max(5000, delayMs) : MIN_DELAY_MS;
+  const maxDelay = Number.isFinite(delayMs) ? Math.max(minDelay, delayMs + 5000) : MAX_DELAY_MS;
+  const warmupMin = Number.isFinite(delayMs) ? Math.max(10000, delayMs + 5000) : WARMUP_MIN_DELAY_MS;
+  const warmupMax = Number.isFinite(delayMs) ? Math.max(warmupMin, delayMs + 10000) : WARMUP_MAX_DELAY_MS;
 
   if (!manager.ready) {
     return res.status(400).json({ error: 'WhatsApp connection missing or not authorized.' });
@@ -993,12 +1001,16 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     [user.id, sinceToday.toISOString()]
   );
   const sentToday = todayCount.rows[0]?.n || 0;
-  if (sentToday + list.length > DAILY_MAX_MSG) {
-    return res.status(429).json({
-      error: `Daily limit reached (${DAILY_MAX_MSG} messages per day). Already sent ${sentToday} today.`,
-      sentToday,
-      limit: DAILY_MAX_MSG,
-    });
+  // Daily cap removed — dashboard shows warning instead. High volume warning at 1000+ msgs/day per number.
+  // if (sentToday + list.length > DAILY_MAX_MSG) {
+  //   return res.status(429).json({
+  //     error: `Daily limit reached (${DAILY_MAX_MSG} messages per day). Already sent ${sentToday} today.`,
+  //     sentToday,
+  //     limit: DAILY_MAX_MSG,
+  //   });
+  // }
+  if (sentToday + list.length > 1000) {
+    console.warn(`[campaign] High volume warning: ${sentToday + list.length} msgs today for user ${user.email} (may risk number ban)`);
   }
 
   // Deduct credits atomically (concurrency-safe)
@@ -1067,12 +1079,14 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     }
   }
 
-  // Conservative pacing helper: slow warm-up for first messages, then steady 18-30s.
+  // Conservative pacing helper: slow warm-up for first messages, then steady 15-20s.
   const delayFor = (index) => {
     if (index < WARMUP_SEND_COUNT) {
-      return Math.floor(Math.random() * (WARMUP_MAX_DELAY_MS - WARMUP_MIN_DELAY_MS + 1)) + WARMUP_MIN_DELAY_MS;
+      progress.phase = 'warmup';
+      return Math.floor(Math.random() * (warmupMax - warmupMin + 1)) + warmupMin;
     }
-    return Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS + 1)) + MIN_DELAY_MS;
+    progress.phase = 'steady';
+    return Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
   };
 
   // --- SAFETY-NETTED CAMPAIGN LOOP ---
@@ -1083,6 +1097,13 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   let abortReason = null;
   try {
     for (let i = 0; i < list.length; i++) {
+      if (progress.stopRequested) {
+        abortReason = 'Stopped by user';
+        progress.aborted = true;
+        progress.abortReason = abortReason;
+        progress.phase = 'stopping';
+        break;
+      }
       if (!manager.connected) {
         abortReason = 'WhatsApp disconnected';
         progress.aborted = true;
@@ -1101,11 +1122,13 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
       if (i > 0 && i % BATCH_SIZE === 0) {
         console.log(`[campaign] Batch limit (${i}) reached. Pausing ${Math.round(BATCH_PAUSE_MS / 60000)} min...`);
         progress.batchBreak = true;
+        progress.phase = 'batch_break';
         progress.nextTarget = { name: target.Name || target.name || '—', phone: target.Phone || target.phone || '' };
         progress.nextSendAt = Date.now() + BATCH_PAUSE_MS;
         await sleep(BATCH_PAUSE_MS);
         progress.nextSendAt = null;
         progress.batchBreak = false;
+        progress.phase = 'steady';
         if (!manager.connected) {
           abortReason = 'WhatsApp disconnected during batch break';
           progress.aborted = true;
@@ -1162,6 +1185,14 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
         }
       }
       results.push(result);
+
+      if (progress.stopRequested) {
+        abortReason = 'Stopped by user';
+        progress.aborted = true;
+        progress.abortReason = abortReason;
+        progress.phase = 'stopping';
+        break;
+      }
 
       if (i < list.length - 1) {
         const delay = delayFor(i);
@@ -1240,6 +1271,18 @@ app.get('/api/progress', authMiddleware, (req, res) => {
     nextSendIn,
     etaMs,
   });
+});
+
+// --- STOP CAMPAIGN ---
+app.post('/api/stop-campaign', authMiddleware, (req, res) => {
+  const progress = getProgress(req.user.id);
+  if (progress.running) {
+    progress.stopRequested = true;
+    progress.phase = 'stopping';
+    res.json({ success: true, message: 'Stop requested — finishing current message then stopping' });
+  } else {
+    res.json({ success: false, message: 'No campaign running' });
+  }
 });
 
 // --- STATUS (privacy-safe) ---

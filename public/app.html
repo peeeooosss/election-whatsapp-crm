@@ -21,6 +21,14 @@
 
 <div class="container">
 
+    <!-- Safety Alerts -->
+    <div class="alert-box warning" style="margin-bottom:16px; padding:12px 16px; background:#fff3cd; border:1px solid #ffc107; border-radius:8px; color:#856404;">
+        <strong>⚠️ Message Volume Warning:</strong> Sending more than <strong>1,000 messages/day from one WhatsApp number</strong> significantly increases ban risk. For 400-500 messages per candidate, use a separate WhatsApp number per candidate (5 numbers for 5 candidates).
+    </div>
+    <div class="alert-box danger" style="margin-bottom:16px; padding:12px 16px; background:#f8d7da; border:1px solid #f5c6cb; border-radius:8px; color:#721c24;">
+        <strong>🚫 Content Policy:</strong> Do NOT send inappropriate, offensive, hateful, or misleading content. WhatsApp bans numbers for policy violations instantly. Only send election-related, respectful messages to opted-in contacts.
+    </div>
+
     <!-- Section 1: WhatsApp Connection -->
     <div class="card">
         <h2>WhatsApp Connection</h2>
@@ -79,7 +87,24 @@
             <img id="imagePreviewImg" alt="Campaign image preview" style="max-width:220px; max-height:140px; border-radius:8px; border:1px solid var(--border,#e2e8f0);">
             <button class="btn btn-secondary" id="removeImageBtn" style="width:auto; margin-left:8px; padding:2px 10px; font-size:0.85em;">Remove</button>
         </div>
-        <button class="btn btn-success" id="startBtn" style="font-size:1.1em; margin-top:12px;">🚀 Start Campaign</button>
+        <div style="display:flex; gap:12px; align-items:center; margin-top:12px; flex-wrap:wrap;">
+            <label style="display:flex; align-items:center; gap:8px; font-size:0.9em;">
+                <span>Delay between messages:</span>
+                <select id="delaySelect" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border,#e2e8f0); background:var(--bg,#fff);">
+                    <option value="15000">15 sec (Fast — Higher Risk)</option>
+                    <option value="18000">18 sec (Balanced)</option>
+                    <option value="20000" selected>20 sec (Recommended — Medium-Low Risk)</option>
+                    <option value="22000">22 sec (Conservative)</option>
+                    <option value="25000">25 sec (Safe)</option>
+                    <option value="30000">30 sec (Very Safe)</option>
+                </select>
+            </label>
+            <span class="text-muted" style="font-size:0.8em;">Lower delay = faster sending but higher ban risk. 20s default is balanced.</span>
+        </div>
+        <div style="display:flex; gap:12px; margin-top:12px; flex-wrap:wrap;">
+            <button class="btn btn-success" id="startBtn" style="font-size:1.1em;">🚀 Start Campaign</button>
+            <button class="btn btn-danger" id="stopBtn" style="font-size:1.1em; display:none;">⏹ Stop Sending</button>
+        </div>
         <div id="campaignStatus" class="status-bar" style="display:none;">
             <span id="campaignStatusText"></span>
             <button class="btn btn-secondary" id="refreshProgressBtn" style="display:none; margin-left:8px; padding:2px 10px; font-size:0.85em;">↻ Refresh</button>
