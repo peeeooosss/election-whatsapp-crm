@@ -10,6 +10,9 @@ data/
 
 # Environment / secrets
 .env
+.env.*
+token
+.netlify-auth.json
 
 # Logs
 *.log
@@ -21,6 +24,3 @@ dev.txt
 
 # Netlify local state (auth/site link)
 .netlify/
-
-# Netlify deploy token
-.netlify-auth.json

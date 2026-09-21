@@ -30,6 +30,16 @@ const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 3 * 60 * 1000);
 const DAILY_MAX_MSG = Number(process.env.DAILY_MAX_MSG || 5000);
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'silent');
 
+// Keep-alive: Render Free spins a service down after 15 min without inbound
+// traffic. We ping our own public URL while any campaign is active (+ a tail
+// window) so a send can never be killed by idle shutdown. KEEP_ALIVE_URL
+// defaults to RENDER_EXTERNAL_URL (set automatically by Render).
+const KEEP_ALIVE_URL = (process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
+const KEEP_ALIVE_INTERVAL_MS = Number(process.env.KEEP_ALIVE_INTERVAL_MS || 5 * 60 * 1000);
+const KEEP_ALIVE_TIMEOUT_MS = Number(process.env.KEEP_ALIVE_TIMEOUT_MS || 20 * 60 * 1000);
+let lastCampaignActivity = 0;
+function touchCampaignActivity() { lastCampaignActivity = Date.now(); }
+
 // Baileys logger: controls all the WhatsApp library's internal log output
 // ("Session error: Bad MAC", reconnect notices, etc.). 'silent' (default)
 // suppresses it entirely. Use 'warn'/'error' to keep only real problems.
@@ -37,6 +47,19 @@ const baileysLogger = require('pino')({
   level: LOG_LEVEL === 'silent' ? 'silent' : LOG_LEVEL,
   timestamp: () => `,"time":"${new Date().toJSON()}"`,
 });
+
+// libsignal (a Baileys dependency) calls console.error directly instead of using
+// the pino logger, so 'silent' above can't stop the "Session error: Bad MAC"
+// noise from decryptWhisperMessage. Intercept those specific lines ourselves so
+// they never reach the logs either.
+const _origConsoleError = console.error.bind(console);
+console.error = (...args) => {
+  const text = args.map(a => (a instanceof Error ? a.message : String(a))).join(' ');
+  if (LOG_LEVEL === 'silent' && /Session error:|Failed to decrypt message/.test(text)) {
+    return; // suppress known-decoy libsignal noise
+  }
+  _origConsoleError(...args);
+};
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
 const ADMIN_FALLBACKS = ['piyushbhuyan71@gmail.com'];
@@ -1052,6 +1075,7 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
 
   console.log(`[campaign] Starting for ${list.length} recipients (user: ${user.email})...`);
   progress.running = true;
+  touchCampaignActivity();
   progress.userId = user.id;
   progress.total = list.length;
   progress.sent = 0;
@@ -1165,6 +1189,7 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
 
       const target = list[i];
       progress.currentIndex = i;
+      touchCampaignActivity();
       const next = (i + 1 < list.length) ? list[i + 1] : null;
       progress.nextTarget = next
         ? { name: next.Name || next.name || '—', phone: next.Phone || next.phone || '' }
@@ -1334,6 +1359,9 @@ app.post('/api/stop-campaign', authMiddleware, (req, res) => {
     res.json({ success: false, message: 'No campaign running' });
   }
 });
+
+// --- PING (keep-alive + Render health check) ---
+app.get('/api/ping', (req, res) => res.json({ ok: true, t: Date.now() }));
 
 // --- STATUS (privacy-safe) ---
 // Public (Render health checks): minimal, no identifying info. Authenticated:
@@ -1533,4 +1561,25 @@ app.listen(PORT, HOST, async () => {
       console.error(e.stack);
     });
   }, 1000);
+
+  // Keep-alive watchdog: while any user's campaign is running (or within the
+  // 20-min tail after the last one), ping our own public URL so Render Free
+  // never spins the instance down mid-send. Silently idles when nothing is
+  // running so the service can still sleep and save free-tier hours.
+  if (KEEP_ALIVE_URL) {
+    const keepAlivePing = () => {
+      fetch(`${KEEP_ALIVE_URL}/api/ping`)
+        .then((r) => r.json())
+        .catch(() => {});
+    };
+    setInterval(() => {
+      const anyRunning = Object.values(progressByUser).some(p => p.running);
+      if (anyRunning || Date.now() - lastCampaignActivity < KEEP_ALIVE_TIMEOUT_MS) {
+        keepAlivePing();
+      }
+    }, KEEP_ALIVE_INTERVAL_MS);
+    console.log(`[keepalive] Enabled: ping ${KEEP_ALIVE_URL}/api/ping every ${Math.round(KEEP_ALIVE_INTERVAL_MS / 60000)} min while campaigns active (+${Math.round(KEEP_ALIVE_TIMEOUT_MS / 60000)} min tail)`);
+  } else {
+    console.log('[keepalive] Disabled: no KEEP_ALIVE_URL or RENDER_EXTERNAL_URL set');
+  }
 });

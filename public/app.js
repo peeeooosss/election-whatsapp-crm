@@ -62,6 +62,10 @@
   const campaignStatusText = document.getElementById('campaignStatusText');
   const refreshProgressBtn = document.getElementById('refreshProgressBtn');
   const campaignProgressDetail = document.getElementById('campaignProgressDetail');
+  const campaignBar = document.getElementById('campaignBar');
+  const progressFill = document.getElementById('progressFill');
+  const progressPct = document.getElementById('progressPct');
+  const progressCount = document.getElementById('progressCount');
   const campaignImage = document.getElementById('campaignImage');
   const imageStatus = document.getElementById('imageStatus');
   const imagePreview = document.getElementById('imagePreview');
@@ -373,6 +377,7 @@
     campaignStatusText.textContent = 'Starting campaign...';
     campaignProgressDetail.style.display = 'none';
     refreshProgressBtn.style.display = 'none';
+    campaignBar.style.display = 'none';
 
     const delayMs = parseInt(delaySelect.value, 10);
     const res = await api('/api/send-bulk', {
@@ -432,6 +437,7 @@
       progressTimer = null;
       startBtn.disabled = false;
       stopBtn.style.display = 'none';
+      campaignBar.style.display = 'none';
       if (data.aborted) {
         campaignStatus.className = 'status-bar error';
         const reason = data.abortReason || 'Campaign paused';
@@ -455,6 +461,11 @@
     const phaseLabels = { warmup: '🔥 Warmup', steady: '⚡ Steady', batch_break: '⏸ Batch Break', stopping: '🛑 Stopping', idle: '' };
     const phaseLabel = phaseLabels[data.phase] || '';
     campaignStatusText.textContent = `${phaseLabel} — message ${data.currentIndex + 1}/${data.total} (${pct}%)`;
+
+    campaignBar.style.display = 'block';
+    progressFill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+    progressPct.textContent = pct + '%';
+    progressCount.textContent = `${Math.min(data.sent + data.failed, data.total)}/${data.total} sent/failed`;
 
     const lines = [];
     lines.push(`<strong>Phase:</strong> ${phaseLabel || '—'} &nbsp;|&nbsp; <strong>Sent:</strong> ${data.sent}/${data.total} (${pct}%) &nbsp;|&nbsp; <strong>Failed:</strong> ${data.failed} &nbsp;|&nbsp; <strong>Refunded:</strong> ${data.refunded}`);

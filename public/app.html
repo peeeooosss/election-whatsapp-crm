@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WhatsApp Campaign Manager</title>
+    <meta name="description" content="Bulk WhatsApp message sender & mini-CRM for election campaigns">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📱</text></svg>">
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
     <script src="config.js"></script>
@@ -11,7 +13,7 @@
 <body>
 
 <nav class="navbar">
-    <a href="/app" class="navbar-brand">📱 WhatsApp Campaign</a>
+    <a href="/app" class="navbar-brand"><span class="logo-emoji">📱</span> WhatsApp Campaign</a>
     <div class="navbar-right">
         <span class="credit-badge" id="creditBadge">Credits: 0</span>
         <a href="/admin" class="nav-link" id="adminLink" style="display:none;">Admin</a>
@@ -22,39 +24,43 @@
 <div class="container">
 
     <!-- Safety Alerts -->
-    <div class="alert-box warning" style="margin-bottom:16px; padding:12px 16px; background:#fff3cd; border:1px solid #ffc107; border-radius:8px; color:#856404;">
-        <strong>⚠️ Message Volume Warning:</strong> Sending more than <strong>1,000 messages/day from one WhatsApp number</strong> significantly increases ban risk. For 400-500 messages per candidate, use a separate WhatsApp number per candidate (5 numbers for 5 candidates).
+    <div class="alert-box warning" style="margin-bottom:14px;">
+        <span>⚠️</span>
+        <div><strong>Message Volume Warning:</strong> Sending more than <strong>1,000 messages/day from one WhatsApp number</strong> significantly increases ban risk. For 400-500 messages per candidate, use a separate WhatsApp number per candidate (5 numbers for 5 candidates).</div>
     </div>
-    <div class="alert-box danger" style="margin-bottom:16px; padding:12px 16px; background:#f8d7da; border:1px solid #f5c6cb; border-radius:8px; color:#721c24;">
-        <strong>🚫 Content Policy:</strong> Do NOT send inappropriate, offensive, hateful, or misleading content. WhatsApp bans numbers for policy violations instantly. Only send election-related, respectful messages to opted-in contacts.
+    <div class="alert-box danger" style="margin-bottom:20px;">
+        <span>🚫</span>
+        <div><strong>Content Policy:</strong> Do NOT send inappropriate, offensive, hateful, or misleading content. WhatsApp bans numbers for policy violations instantly. Only send election-related, respectful messages to opted-in contacts.</div>
     </div>
 
     <!-- Section 1: WhatsApp Connection -->
     <div class="card">
-        <h2>WhatsApp Connection</h2>
+        <h2>🔗 WhatsApp Connection</h2>
         <div class="conn-box">
-            <input type="text" id="phoneInput" placeholder="Enter 10-digit number (e.g. 9876543210)" style="flex:1;">
+            <input type="tel" id="phoneInput" placeholder="Enter 10-digit number (e.g. 9876543210)">
             <button class="btn btn-primary" id="getPairingBtn" style="width:auto;">Get Pairing Code</button>
-            <button class="btn btn-secondary" id="reconnectBtn" style="width:auto; display:none;">Reconnect</button>
-            <button class="btn btn-secondary" id="disconnectBtn" style="width:auto; display:none;">Disconnect</button>
+            <button class="btn btn-secondary" id="reconnectBtn" style="display:none;">Reconnect</button>
+            <button class="btn btn-danger" id="disconnectBtn" style="display:none;">Disconnect</button>
             <span class="conn-status disconnected" id="connStatus"><span class="dot"></span> Checking...</span>
         </div>
         <div class="linked-device" id="linkedDeviceInfo" style="display:none;"></div>
         <div class="code-display" id="pairingCodeDisplay"></div>
-        <p class="text-muted" style="font-size:0.85em; margin-top:10px;">Each account links its own WhatsApp number. Go to WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead, and enter the code above. Sending only ever uses your own linked number.</p>
+        <p class="section-note">Each account links its own WhatsApp number. Go to WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead, and enter the code above. Sending only ever uses your own linked number.</p>
     </div>
 
     <!-- Section 2: Upload Voter List -->
     <div class="card">
-        <h2>Upload Voter List (Excel)</h2>
-        <input type="file" id="fileInput" accept=".xlsx,.xls" style="margin-bottom:12px; width:100%;">
-        <div style="display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
-            <a href="voter-template.xlsx" download style="font-size:0.85em;">Download template (blank)</a>
-            <button class="btn btn-danger" id="removeExcelBtn" style="display:none; width:auto; padding:4px 12px; font-size:0.85em;">🗑 Remove Excel</button>
+        <h2>👥 Upload Voter List (Excel)</h2>
+        <label class="file-input-label">Choose an .xlsx / .xls file
+            <input type="file" id="fileInput" accept=".xlsx,.xls">
+        </label>
+        <div class="btn-row" style="margin-top:10px;">
+            <a href="voter-template.xlsx" download class="btn btn-secondary btn-sm" style="text-decoration:none;">⬇ Download template (blank)</a>
+            <button class="btn btn-danger btn-sm" id="removeExcelBtn" style="display:none;">🗑 Remove Excel</button>
         </div>
-        <div id="crmSection" style="display:none;">
+        <div id="crmSection" style="display:none; margin-top:16px;">
             <div class="filters">
-                <input type="text" id="crmSearch" placeholder="Search Name or Phone..." oninput="window._crmRender && window._crmRender()" style="flex:1; min-width:200px;">
+                <input type="text" id="crmSearch" placeholder="Search Name or Phone..." oninput="window._crmRender && window._crmRender()">
                 <select id="crmDeptFilter" onchange="window._crmRender && window._crmRender()"><option value="">All Departments</option></select>
                 <select id="crmYearFilter" onchange="window._crmRender && window._crmRender()"><option value="">All Years</option></select>
                 <span class="row-count">Showing: <span id="rowCount">0</span> voters</span>
@@ -68,9 +74,9 @@
         </div>
     </div>
 
-    <!-- Section 4: Message Composer -->
+    <!-- Section 3: Message Composer -->
     <div class="card">
-        <h2>Message Composer</h2>
+        <h2>✉️ Message Composer</h2>
         <div class="tags">
             <span>Insert Tags:</span>
             <button class="tag-btn" data-tag="{Name}">[+ Name]</button>
@@ -79,19 +85,19 @@
         </div>
         <textarea id="messageTemplate" placeholder="Hello {Name}, this is a reminder for the upcoming election in {Department}..."></textarea>
         <div class="image-picker">
-            <label class="btn btn-secondary" style="width:auto; cursor:pointer; margin-right:8px;">🖼️ Add Image (optional)
+            <label class="btn btn-secondary" style="cursor:pointer; margin-right:8px;">🖼️ Add Image (optional)
                 <input type="file" id="campaignImage" accept="image/*" style="display:none;">
             </label>
             <span id="imageStatus" class="text-muted" style="font-size:0.85em;">No image selected — messages will be text-only.</span>
         </div>
         <div id="imagePreview" style="display:none; margin-top:10px;">
-            <img id="imagePreviewImg" alt="Campaign image preview" style="max-width:220px; max-height:140px; border-radius:8px; border:1px solid var(--border,#e2e8f0);">
-            <button class="btn btn-secondary" id="removeImageBtn" style="width:auto; margin-left:8px; padding:2px 10px; font-size:0.85em;">Remove</button>
+            <img id="imagePreviewImg" alt="Campaign image preview" style="max-width:220px; max-height:140px; border-radius:var(--radius-sm); border:1px solid var(--border);">
+            <button class="btn btn-secondary btn-sm" id="removeImageBtn" style="margin-left:8px;">Remove</button>
         </div>
-        <div style="display:flex; gap:12px; align-items:center; margin-top:12px; flex-wrap:wrap;">
-            <label style="display:flex; align-items:center; gap:8px; font-size:0.9em;">
+        <div class="btn-row" style="margin-top:14px;">
+            <label style="display:flex; align-items:center; gap:8px; font-size:0.9em; flex-wrap:wrap;">
                 <span>Delay between messages:</span>
-                <select id="delaySelect" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border,#e2e8f0); background:var(--bg,#fff);">
+                <select id="delaySelect" style="width:auto;">
                     <option value="15000">15 sec (Fast — Higher Risk)</option>
                     <option value="18000">18 sec (Balanced)</option>
                     <option value="20000" selected>20 sec (Recommended — Medium-Low Risk)</option>
@@ -102,47 +108,55 @@
             </label>
             <span class="text-muted" style="font-size:0.8em;">Lower delay = faster sending but higher ban risk. 20s default is balanced.</span>
         </div>
-        <div style="display:flex; gap:12px; margin-top:12px; flex-wrap:wrap;">
-            <button class="btn btn-success" id="startBtn" style="font-size:1.1em;">🚀 Start Campaign</button>
-            <button class="btn btn-danger" id="stopBtn" style="font-size:1.1em; display:none;">⏹ Stop Sending</button>
+        <div class="btn-row">
+            <button class="btn btn-success" id="startBtn" style="font-size:1.05em;">🚀 Start Campaign</button>
+            <button class="btn btn-danger" id="stopBtn" style="display:none;">⏹ Stop Sending</button>
         </div>
         <div id="campaignStatus" class="status-bar" style="display:none;">
             <span id="campaignStatusText"></span>
-            <button class="btn btn-secondary" id="refreshProgressBtn" style="display:none; margin-left:8px; padding:2px 10px; font-size:0.85em;">↻ Refresh</button>
+            <button class="btn btn-secondary btn-sm" id="refreshProgressBtn" style="display:none; margin-left:8px;">↻ Refresh</button>
         </div>
-        <div id="campaignProgressDetail" style="display:none; margin-top:10px; font-size:0.9em; line-height:1.8; background:rgba(39,174,96,0.06); border:1px solid var(--border,#e2e8f0); border-radius:8px; padding:10px 12px;"></div>
+        <div id="campaignBar" style="display:none;">
+            <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+            <div class="progress-label"><span id="progressPct">0%</span><span id="progressCount">0/0</span></div>
+        </div>
+        <div id="campaignProgressDetail" class="campaign-progress-detail" style="display:none;"></div>
     </div>
 
-    <!-- Section 3: Buy Credits -->
+    <!-- Section 4: Buy Credits -->
     <div class="card">
-        <h2>Buy Credits</h2>
+        <h2>💳 Buy Credits</h2>
         <p class="text-muted" style="font-size:0.9em;">₹<span id="pricePerMsg">0.40</span> per message. Choose how many messages to send (min 100, max 1000).</p>
         <div class="buy-row">
             <label for="qtyInput">Messages:</label>
-            <input type="number" id="qtyInput" min="100" max="1000" step="10" value="100" style="flex:1; min-width:120px;">
+            <input type="number" id="qtyInput" min="100" max="1000" step="10" value="100">
             <span class="buy-price">= ₹<span id="buyPrice">40</span></span>
         </div>
-        <button class="btn btn-success" id="buyBtn" style="margin-top:12px;">Buy Now</button>
-        <div id="buyDetails" style="display:none; margin-top:12px; font-size:0.95em;">
-            <p><strong>1. Pay via UPI</strong> to: <span class="upi-id" id="upiIdDisplay"></span> (<span id="upiNameDisplay"></span>) — ₹<span id="buyPrice2"></span></p>
-            <p><strong>2. Text me on WhatsApp</strong> with your email + payment confirmation 👇</p>
-            <a id="whatsappLink" href="#" target="_blank" rel="noopener" class="btn btn-primary" style="width:auto;">💬 Text me on WhatsApp</a>
-            <p class="text-muted" style="margin-top:8px;">Once you've paid, I'll add the credits from the admin panel.</p>
+        <div class="btn-row">
+            <button class="btn btn-success" id="buyBtn">Buy Now</button>
+        </div>
+        <div id="buyDetails" style="display:none; margin-top:14px; font-size:0.95em;">
+            <div class="addon-note">
+                <p><strong>1.</strong> Pay via UPI to: <span class="upi-id" id="upiIdDisplay"></span> (<span id="upiNameDisplay"></span>) — ₹<span id="buyPrice2"></span></p>
+                <p style="margin-top:6px;"><strong>2.</strong> Text on WhatsApp with your email + payment confirmation 👇</p>
+                <a id="whatsappLink" href="#" target="_blank" rel="noopener" class="btn btn-primary" style="width:auto; margin-top:8px;">💬 Text me on WhatsApp</a>
+                <p class="text-muted" style="margin-top:8px;">Once you've paid, I'll add the credits from the admin panel.</p>
+            </div>
         </div>
         <div id="buyStatus" class="status-bar" style="display:none; margin-top:12px;"></div>
     </div>
 
     <!-- Section 5: Credit History -->
     <div class="card">
-        <h2 style="cursor:pointer;" id="historyToggle">▶ Credit History</h2>
+        <h2 style="cursor:pointer; margin-bottom:0;" id="historyToggle">▶ Credit History</h2>
         <div id="historyContent" style="display:none; margin-top:12px;">
-            <div id="creditHistoryList"></div>
+            <div class="history-rounded" id="creditHistoryList"></div>
         </div>
     </div>
 
     <!-- Section 6: Message History -->
     <div class="card">
-        <h2 style="cursor:pointer;" id="msgHistoryToggle">▶ Sent Message History</h2>
+        <h2 style="cursor:pointer; margin-bottom:0;" id="msgHistoryToggle">▶ Sent Message History</h2>
         <div id="msgHistoryContent" style="display:none; margin-top:12px;">
             <div id="msgHistoryList"></div>
         </div>

@@ -1,0 +1,10 @@
+{
+  "framework": null,
+  "installCommand": "",
+  "buildCommand": "node scripts/render-config.js",
+  "outputDirectory": "public",
+  "rewrites": [
+    { "source": "/app", "destination": "/app.html" },
+    { "source": "/admin", "destination": "/admin.html" }
+  ]
+}

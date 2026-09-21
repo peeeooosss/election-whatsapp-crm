@@ -4,21 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Panel - WhatsApp Campaign Manager</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📱</text></svg>">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <nav class="navbar">
-    <a href="/app" class="navbar-brand">← Back to Campaign</a>
+    <a href="/app" class="navbar-brand"><span class="logo-emoji">📱</span> ← Back to Campaign</a>
     <div class="navbar-right">
-        <span style="color:rgba(255,255,255,0.6); font-size:0.85em;">Admin Panel</span>
+        <span style="color:rgba(255,255,255,0.75); font-size:0.85em;">Admin Panel</span>
         <a class="nav-link" id="logoutBtn" style="cursor:pointer;">Logout</a>
     </div>
 </nav>
 
 <div class="container">
     <div class="flex-between mb-16">
-        <h1 style="font-size:1.4em; color:var(--dark);">Admin Dashboard</h1>
+        <h1 style="font-size:1.3em; color:var(--dark);">Admin Dashboard</h1>
         <span class="text-muted" style="font-size:0.85em;" id="lastUpdated"></span>
     </div>
 
@@ -30,14 +31,14 @@
     <!-- Pending Purchases -->
     <div class="card">
         <h2>Pending Purchases</h2>
-        <div id="pendingList"></div>
+        <div class="history-rounded" id="pendingList"></div>
     </div>
 
     <!-- Add Credits Manually -->
     <div class="card">
         <h2>Add Credits to a User</h2>
         <p class="text-muted" style="font-size:0.85em;">Use this when you collected payment via WhatsApp/UPI directly.</p>
-        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
+        <div class="btn-row" style="justify-content:flex-start;">
             <select id="creditUserSelect" style="flex:1; min-width:200px;"></select>
             <input type="number" id="creditAmount" min="1" step="1" placeholder="Credits (e.g. 200)" style="flex:1; min-width:140px;">
             <button class="btn btn-success" id="addCreditsBtn">Add Credits</button>
@@ -48,7 +49,7 @@
     <!-- All Transactions -->
     <div class="card">
         <h2>All Transactions</h2>
-        <div id="txList" style="max-height:500px; overflow-y:auto;"></div>
+        <div class="history-rounded" id="txList" style="max-height:500px; overflow-y:auto;"></div>
     </div>
 
     <!-- All Users -->
