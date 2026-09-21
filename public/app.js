@@ -35,6 +35,7 @@
   const pairingCodeDisplay = document.getElementById('pairingCodeDisplay');
   const connStatus = document.getElementById('connStatus');
   const fileInput = document.getElementById('fileInput');
+  const removeExcelBtn = document.getElementById('removeExcelBtn');
   const crmSection = document.getElementById('crmSection');
   const crmSearch = document.getElementById('crmSearch');
   const crmDeptFilter = document.getElementById('crmDeptFilter');
@@ -263,10 +264,24 @@
       });
       if (!allData.length) { alert('No rows found'); return; }
       showResults();
+      removeExcelBtn.style.display = 'inline-block';
       // Persist to server so data survives refresh
       await api('/api/voters', { method: 'POST', body: JSON.stringify({ name: file.name, data: allData }) });
     };
     reader.readAsArrayBuffer(file);
+  };
+
+  // Clear the loaded voter list (in-memory + server) so a fresh Excel can be uploaded.
+  removeExcelBtn.onclick = async () => {
+    if (!confirm('Remove the current voter list? You can upload a new Excel file afterwards.')) return;
+    allData = [];
+    filteredData = [];
+    crmSection.style.display = 'none';
+    fileInput.value = '';
+    removeExcelBtn.style.display = 'none';
+    try {
+      await api('/api/voters', { method: 'DELETE' });
+    } catch { /* non-fatal */ }
   };
 
   async function loadSavedVoters() {
@@ -275,6 +290,7 @@
       if (data && data.voters && Array.isArray(data.voters.data) && data.voters.data.length) {
         allData = data.voters.data;
         showResults();
+        removeExcelBtn.style.display = 'inline-block';
       }
     } catch { /* non-fatal */ }
   }
@@ -443,6 +459,18 @@
     }
     campaignProgressDetail.style.display = 'block';
     campaignProgressDetail.innerHTML = lines.join('<br>');
+
+    // Live history: keep the sent-message list up to date while the campaign runs.
+    refreshLiveHistory();
+  }
+
+  // Fetch the latest campaigns from the server and re-render the history list
+  // without forcing the section to open (user toggles it open themselves).
+  async function refreshLiveHistory() {
+    try {
+      const data = await api('/api/history');
+      if (data && data.campaigns) renderMsgHistory(data.campaigns);
+    } catch { /* non-fatal */ }
   }
 
   refreshProgressBtn.onclick = () => {
@@ -557,9 +585,14 @@
   function renderMsgHistory(campaigns) {
     msgHistoryList.innerHTML = campaigns.length === 0
       ? '<p class="text-muted">No campaigns sent yet</p>'
-      : campaigns.map((c, idx) => `<div class="history-item">
+      : campaigns.map((c, idx) => {
+        const running = !c.finishedAt;
+        const dateLabel = running
+          ? '<span style="color:var(--success,#27ae60);">🟢 Sending now…</span>'
+          : new Date(c.finishedAt).toLocaleString();
+        return `<div class="history-item">
           <div class="history-summary" data-i="${idx}" style="cursor:pointer;">
-            <strong>${new Date(c.finishedAt).toLocaleString()}</strong>
+            <strong>${dateLabel}</strong>
             <span>Sent: ${c.sent} | Failed: ${c.failed} | Refunded: ${c.refunded} | Total: ${c.total}</span>
           </div>
           <div class="history-detail" id="histDetail${idx}" style="display:none; margin-top:8px;">
@@ -571,7 +604,8 @@
               </div>`).join('')}
             </div>
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
     msgHistoryList.querySelectorAll('.history-summary').forEach(el => {
       el.onclick = () => {
         const detail = document.getElementById('histDetail' + el.dataset.i);

@@ -47,9 +47,10 @@
     <!-- Section 2: Upload Voter List -->
     <div class="card">
         <h2>Upload Voter List (Excel)</h2>
-        <input type="file" id="fileInput" accept=".xlsx,.xls" style="margin-bottom:12px;">
-        <div style="margin-bottom:12px; font-size:0.9em;">
+        <input type="file" id="fileInput" accept=".xlsx,.xls" style="margin-bottom:12px; width:100%;">
+        <div style="display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
             <a href="voter-template.xlsx" download style="font-size:0.85em;">Download template (blank)</a>
+            <button class="btn btn-danger" id="removeExcelBtn" style="display:none; width:auto; padding:4px 12px; font-size:0.85em;">🗑 Remove Excel</button>
         </div>
         <div id="crmSection" style="display:none;">
             <div class="filters">

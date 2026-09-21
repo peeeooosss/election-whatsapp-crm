@@ -884,6 +884,17 @@ app.post('/api/voters', authMiddleware, async (req, res) => {
   }
 });
 
+// Remove the saved voter list so the user can upload a fresh Excel file.
+app.delete('/api/voters', authMiddleware, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM voter_lists WHERE user_id = $1', [req.user.id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error removing voter list:', error);
+    res.status(500).json({ error: 'Failed to remove voter list.' });
+  }
+});
+
 // --- WHATSAPP PAIRING (per-user device linking) ---
 // Each account links its own WhatsApp number independently.
 app.post('/api/request-code', authMiddleware, async (req, res) => {
@@ -1061,9 +1072,40 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
   });
 
   const startedAt = new Date().toISOString();
-  const finishedAt = new Date().toISOString();
   const results = [];
   const campaignId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+  // Persist the campaign row IMMEDIATELY (finished_at = NULL = in progress) so
+  // partial history survives even a hard server crash mid-campaign. The final
+  // finished_at + counts are written by saveCampaignProgress at the end.
+  try {
+    await pool.query(
+      `INSERT INTO campaigns (id, user_id, message, results, sent, failed, refunded, total, started_at, finished_at)
+       VALUES ($1,$2,$3,$4::jsonb,0,0,0,$5,$6,NULL)`,
+      [campaignId, user.id, messageTemplate || '', '[]', list.length, startedAt]
+    );
+  } catch (rowErr) {
+    console.error('[campaign] Initial campaign row insert failed:', rowErr.message);
+  }
+
+  // Live persistence helper: update the running campaign row in place after
+  // each message so /api/history always reflects progress up to the last send.
+  const saveCampaignProgress = async (forceFinal = false) => {
+    try {
+      const finished = forceFinal ? new Date().toISOString() : null;
+      await pool.query(
+        `UPDATE campaigns
+         SET results = $2::jsonb, sent = $3, failed = $4, refunded = $5
+           ${finished ? ', finished_at = $6' : ''}
+         WHERE id = $1`,
+        finished
+          ? [campaignId, JSON.stringify(results), progress.sent, progress.failed, progress.refunded, finished]
+          : [campaignId, JSON.stringify(results), progress.sent, progress.failed, progress.refunded]
+      );
+    } catch (rowErr) {
+      console.error('[campaign] Progress persist failed:', rowErr.message);
+    }
+  };
 
   // Optional campaign image: decoded ONCE and reused for every recipient so RAM
   // cost is just a single buffer (~1-5MB). Falls back to text-only on any error.
@@ -1162,6 +1204,7 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
         result.status = 'failed';
         result.error = 'Invalid phone number';
         results.push(result);
+        saveCampaignProgress();
         continue;
       }
 
@@ -1195,6 +1238,8 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
         }
       }
       results.push(result);
+      // Persist live progress (skip awaiting not needed — errors are swallowed)
+      saveCampaignProgress();
 
       if (progress.stopRequested) {
         abortReason = 'Stopped by user';
@@ -1230,8 +1275,6 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     }
   }
 
-  const realFinishedAt = new Date().toISOString();
-
   await insertTransaction({
     id: Date.now().toString(36),
     userId: user.id,
@@ -1243,11 +1286,8 @@ app.post('/api/send-bulk', authMiddleware, async (req, res) => {
     createdAt: new Date().toISOString(),
   });
 
-  await pool.query(
-    `INSERT INTO campaigns (id, user_id, message, results, sent, failed, refunded, total, started_at, finished_at)
-     VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10)`,
-    [campaignId, user.id, messageTemplate || '', JSON.stringify(results), progress.sent, progress.failed, progress.refunded, list.length, startedAt, realFinishedAt]
-  );
+  // Finalize the live row: set finished_at + final counts (covers complete/stop/abort).
+  await saveCampaignProgress(true);
 
   progress.running = false;
   progress.nextTarget = null;
