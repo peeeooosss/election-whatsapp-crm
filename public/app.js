@@ -252,6 +252,15 @@
     } catch {}
   }
 
+  // --- Excel Help Toggle ---
+  const excelHelpToggle = document.getElementById('excelHelpToggle');
+  const excelHelp = document.getElementById('excelHelp');
+  excelHelpToggle.onclick = () => {
+    const visible = excelHelp.style.display !== 'none';
+    excelHelp.style.display = visible ? 'none' : 'block';
+    excelHelpToggle.textContent = visible ? '📖 How should my Excel look?' : '📕 Hide Excel format guide';
+  };
+
   // --- Excel Upload & CRM ---
   fileInput.onchange = () => {
     const file = fileInput.files[0];

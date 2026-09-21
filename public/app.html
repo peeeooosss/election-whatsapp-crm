@@ -55,8 +55,28 @@
             <input type="file" id="fileInput" accept=".xlsx,.xls">
         </label>
         <div class="btn-row" style="margin-top:10px;">
-            <a href="voter-template.xlsx" download class="btn btn-secondary btn-sm" style="text-decoration:none;">⬇ Download template (blank)</a>
             <button class="btn btn-danger btn-sm" id="removeExcelBtn" style="display:none;">🗑 Remove Excel</button>
+            <button class="btn btn-secondary btn-sm" id="excelHelpToggle" style="cursor:pointer;">📖 How should my Excel look?</button>
+        </div>
+        <div id="excelHelp" style="display:none; margin-top:14px;">
+            <div class="excel-help">
+                <p><strong>Row 1 must be your column headers.</strong> Your first sheet's first row becomes the table + message tags.</p>
+                <div class="table-container" style="max-height:260px;">
+                    <table>
+                        <thead><tr><th>Name</th><th>Phone</th><th>Department</th><th>Year</th></tr></thead>
+                        <tbody>
+                            <tr><td>Rajesh Kumar</td><td>9876543210</td><td>Ward 1 - Sector A</td><td>2024</td></tr>
+                            <tr><td>Priya Sharma</td><td>+91 70866 06995</td><td>Ward 2 - Sector B</td><td>2024</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <ul class="excel-rules">
+                    <li><strong>Phone</strong> — required. Any format works (<code>9876543210</code>, <code>+91…</code>, <code>0…</code>, spaces, dashes). 10-digit numbers get <code>+91</code> added automatically.</li>
+                    <li><strong>Name, Department, Year</strong> — optional. They fill the <code>{Name}</code>, <code>{Department}</code>, <code>{Year}</code> tags in your message and power the Department / Year filters.</li>
+                    <li><strong>Extra columns are fine</strong> — every column appears in the table automatically.</li>
+                    <li>Headers are case-insensitive (<code>name</code>, <code>phone</code>, <code>department</code>, <code>year</code> all match).</li>
+                </ul>
+            </div>
         </div>
         <div id="crmSection" style="display:none; margin-top:16px;">
             <div class="filters">
