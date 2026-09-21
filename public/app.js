@@ -303,31 +303,46 @@
     crmSection.style.display = 'block';
   }
 
+  function collectColumns() {
+    const cols = [];
+    allData.forEach(r => Object.keys(r).forEach(k => { if (!cols.includes(k)) cols.push(k); }));
+    return cols;
+  }
+
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
   function populateFilters() {
-    const depts = [...new Set(allData.map(d => d.Department || d.department))].filter(Boolean).sort();
-    const years = [...new Set(allData.map(d => d.Year || d.year))].filter(Boolean).sort();
-    crmDeptFilter.innerHTML = '<option value="">All Departments</option>' + depts.map(d => `<option value="${d}">${d}</option>`).join('');
-    crmYearFilter.innerHTML = '<option value="">All Years</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
+    const cols = collectColumns();
+    const deptKey = cols.find(c => /department|dept/i.test(c));
+    const yearKey = cols.find(c => /year/i.test(c));
+    crmDeptFilter.style.display = deptKey ? '' : 'none';
+    crmYearFilter.style.display = yearKey ? '' : 'none';
+    const depts = deptKey ? [...new Set(allData.map(d => d[deptKey] != null ? String(d[deptKey]).trim() : '')).filter(Boolean)].sort() : [];
+    const years = yearKey ? [...new Set(allData.map(d => d[yearKey] != null ? String(d[yearKey]).trim() : '')).filter(Boolean)].sort() : [];
+    crmDeptFilter.innerHTML = '<option value="">All Departments</option>' + depts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+    crmYearFilter.innerHTML = '<option value="">All Years</option>' + years.map(y => `<option value="${esc(y)}">${esc(y)}</option>`).join('');
+    window._crmDeptKey = deptKey;
+    window._crmYearKey = yearKey;
   }
 
   function renderTable() {
+    const cols = collectColumns();
     const search = crmSearch.value.toLowerCase();
+    const deptKey = window._crmDeptKey;
+    const yearKey = window._crmYearKey;
     const dept = crmDeptFilter.value;
     const year = crmYearFilter.value;
     filteredData = allData.filter(r => {
-      const name = (r.Name || r.name || '').toLowerCase();
-      const phone = (r.Phone || r.phone || '').toString();
-      const d = r.Department || r.department || '';
-      const y = r.Year || r.year || '';
-      return (name.includes(search) || phone.includes(search)) && (!dept || d === dept) && (!year || y === year);
+      const haystack = cols.map(c => String(r[c] == null ? '' : r[c]).toLowerCase()).join(' ');
+      const d = deptKey ? String(r[deptKey] == null ? '' : r[deptKey]) : '';
+      const y = yearKey ? String(r[yearKey] == null ? '' : r[yearKey]) : '';
+      return haystack.includes(search) && (!dept || d === dept) && (!year || y === year);
     });
+    const thead = crmTable.querySelector('thead tr');
+    thead.innerHTML = cols.map(c => `<th>${esc(c)}</th>`).join('');
     const tbody = crmTable.querySelector('tbody');
-    tbody.innerHTML = filteredData.map(r => `<tr>
-      <td>${r.Name || r.name || 'N/A'}</td>
-      <td>${r.Phone || r.phone || 'N/A'}</td>
-      <td>${r.Department || r.department || '-'}</td>
-      <td>${r.Year || r.year || '-'}</td>
-    </tr>`).join('');
+    tbody.innerHTML = filteredData.map(r => `<tr>${cols.map(c => `<td>${esc(r[c])}</td>`).join('')}</tr>`).join('');
     rowCount.textContent = filteredData.length;
   }
 
