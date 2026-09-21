@@ -271,12 +271,10 @@
     reader.readAsArrayBuffer(file);
   };
 
-  // Clear the loaded voter list (in-memory + server) so a fresh Excel can be uploaded.
+  // Remove the server-saved copy + reset the file input so a fresh Excel can be
+  // uploaded. The currently loaded rows stay visible in the table until replaced.
   removeExcelBtn.onclick = async () => {
-    if (!confirm('Remove the current voter list? You can upload a new Excel file afterwards.')) return;
-    allData = [];
-    filteredData = [];
-    crmSection.style.display = 'none';
+    if (!confirm('Remove the saved voter list? The table keeps showing the current rows until you upload a new Excel file.')) return;
     fileInput.value = '';
     removeExcelBtn.style.display = 'none';
     try {
@@ -296,6 +294,9 @@
   }
 
   function showResults() {
+    crmSearch.value = '';
+    crmDeptFilter.value = '';
+    crmYearFilter.value = '';
     populateFilters();
     window._crmRender = renderTable;
     renderTable();
