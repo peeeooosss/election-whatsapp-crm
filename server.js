@@ -29,6 +29,10 @@ const BATCH_SIZE = Number(process.env.BATCH_SIZE || 200);
 const BATCH_PAUSE_MS = Number(process.env.BATCH_PAUSE_MS || 3 * 60 * 1000);
 const DAILY_MAX_MSG = Number(process.env.DAILY_MAX_MSG || 5000);
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'silent');
+// How long Baileys keeps a pairing/QR window open before timing out. Used as
+// the qrTimeout for every socket so a freshly-issued pairing code stays valid
+// on the phone for long enough to enter (default: 5 minutes).
+const PAIRING_WINDOW_MS = Number(process.env.PAIRING_WINDOW_MS || 5 * 60 * 1000);
 
 // Keep-alive: Render Free spins a service down after 15 min without inbound
 // traffic. We ping our own public URL while any campaign is active (+ a tail
@@ -445,6 +449,12 @@ class WhatsAppManager {
     this.pendingPair = null;
     this.pairingWindowOpen = false; // true once the socket finishes the noise handshake and enters the pairing window (qr event)
     this.pairingRequestInFlight = false;
+    // A pairing code has been issued and the socket that registered it is still
+    // waiting for the phone to complete the link. While true we must keep that
+    // exact socket alive (no auto-reconnect, no clearing of the half-written
+    // creds) so WhatsApp keeps accepting the code on the phone.
+    this.pairingActive = false;
+    this.pairingCodeIssuedAt = 0;
   }
 
   get connected() { return this.state === 'connected' && !!this.socket; }
@@ -483,6 +493,12 @@ class WhatsAppManager {
       auth: state,
       logger: baileysLogger,
       browser: Browsers.ubuntu('Chrome'),
+      // Keep each QR/pairing window alive long enough for a phone to link.
+      // Baileys' default qrTimeout (60s first QR, then 20s) exhausts the
+      // freshness of a pairing code in ~2 min — the socket that registered the
+      // code dies while the user is still typing it, and WhatsApp then reports
+      // the code as invalid on the phone. Give a generous window instead.
+      qrTimeout: PAIRING_WINDOW_MS,
     });
     this.socket = newSock;
     this.state = 'connecting';
@@ -514,6 +530,8 @@ class WhatsAppManager {
       // registered with WhatsApp — the phone would report it as invalid.
     } else if (connection === 'open') {
       this.state = 'connected';
+      this.pairingActive = false;
+      this.pairingCodeIssuedAt = 0;
       console.log('[whatsapp] Connection opened successfully!');
       await this.persistDeviceIfNeeded();
     } else if (connection === 'close') {
@@ -527,13 +545,25 @@ class WhatsAppManager {
       const closedSock = this.socket;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const isLoggedOut = statusCode === this.DisconnectReason?.loggedOut;
-      console.log(`[whatsapp] Connection closed (status ${statusCode}). Logged out: ${isLoggedOut}`);
+      const detail = lastDisconnect?.error?.message || lastDisconnect?.error?.data?.reason || '';
+      console.log(`[whatsapp] Connection closed (status ${statusCode}, logged out: ${isLoggedOut})${detail ? `: ${detail}` : ''}`);
       if (this.socket === closedSock) this.socket = null;
       if (isLoggedOut) {
         this.state = 'logged_out';
+        this.pairingActive = false;
         // Keep the device record but drop the invalid session creds so a fresh
         // pairing is possible.
         await clearSessionKeys(this.userId);
+        return;
+      }
+      // While a pairing code we issued is still waiting for the phone, keep the
+      // state stable: do NOT auto-reconnect (a fresh socket would re-register
+      // with half-written creds and get 401'd, invalidating the code) and do
+      // NOT treat the half-written creds.json as a real session.
+      if (this.pairingActive) {
+        this.pairingActive = false;
+        console.log('[whatsapp] Pairing window closed before the phone linked — code is no longer valid. User must regenerate.');
+        this.state = 'disconnected';
         return;
       }
       // Only auto-reconnect when we still hold a real paired session. A fresh
@@ -544,6 +574,7 @@ class WhatsAppManager {
       // been created in the meantime (e.g. a fresh pairing socket).
       this.reconnectTimer = setTimeout(() => {
         if (this.socket !== null) return;  // a newer socket already exists
+        if (this.pairingActive) return;    // never fight an active pairing socket
         console.log(`[whatsapp] Reconnecting (user ${this.userId})...`);
         this.ensureSocket().catch((e) => console.error('[whatsapp] Reconnect error:', e.message));
       }, 3000);
@@ -603,6 +634,11 @@ class WhatsAppManager {
     try {
       if (!this.socket) throw new Error('No WhatsApp socket available.');
       const code = await this.socket.requestPairingCode(pair.phoneNumber);
+      // The code is now registered with WhatsApp and tied to THIS socket. Mark
+      // the pairing as active so the close handler keeps this socket in place
+      // until the phone links (or the window expires) instead of reconnecting.
+      this.pairingActive = true;
+      this.pairingCodeIssuedAt = Date.now();
       pair.resolve(code);
     } catch (e) {
       pair.reject(e);
@@ -620,6 +656,8 @@ class WhatsAppManager {
     this.state = 'connecting';
     this.pairingWindowOpen = false;
     this.pairingRequestInFlight = false;
+    this.pairingActive = false;
+    this.pairingCodeIssuedAt = 0;
     await this.ensureSocket();
     if (!this.socket) throw new Error('Could not create a WhatsApp socket.');
     return await fn(this.socket);
@@ -632,6 +670,8 @@ class WhatsAppManager {
     this.state = 'connecting';
     this.pairingWindowOpen = false;
     this.pairingRequestInFlight = false;
+    this.pairingActive = false;
+    this.pairingCodeIssuedAt = 0;
     await this.ensureSocket();
     return this.state;
   }
@@ -641,6 +681,8 @@ class WhatsAppManager {
   // tied to the same account.
   async disconnect() {
     this.state = 'logged_out';
+    this.pairingActive = false;
+    this.pairingCodeIssuedAt = 0;
     if (this.pendingPair) {
       const pending = this.pendingPair;
       this.pendingPair = null;

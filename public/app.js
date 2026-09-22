@@ -33,6 +33,7 @@
   const phoneInput = document.getElementById('phoneInput');
   const getPairingBtn = document.getElementById('getPairingBtn');
   const pairingCodeDisplay = document.getElementById('pairingCodeDisplay');
+  let pairingCodeVisible = false;
   const connStatus = document.getElementById('connStatus');
   const fileInput = document.getElementById('fileInput');
   const removeExcelBtn = document.getElementById('removeExcelBtn');
@@ -142,8 +143,9 @@
           : '';
         pairingCodeDisplay.innerHTML = `<div style="font-size:0.4em;letter-spacing:1px;color:#718096;">Pairing code for ${num || phone}</div>${data.code}${warn}<div id="codeCountdown" style="font-size:0.35em;letter-spacing:1px;color:#e67e22;margin-top:6px;"></div>`;
         pairingCodeDisplay.style.display = 'block';
-        alert(`Code generated for ${num || phone}! Enter it in WhatsApp within 2 minutes: WhatsApp Settings > Linked Devices > Link a Device > "Link with phone number instead".`);
-        startCodeCountdown(120);
+        pairingCodeVisible = true;
+        alert(`Code generated for ${num || phone}! Enter it in WhatsApp within 5 minutes: WhatsApp Settings > Linked Devices > Link a Device > "Link with phone number instead". Note: brand-new WhatsApp accounts are sometimes blocked from linking a device for a few hours/days — if it fails, use an established number.`);
+        startCodeCountdown(300);
       } else {
         alert(data?.error || 'Failed to generate code');
       }
@@ -159,6 +161,7 @@
       if (seconds <= 0) {
         el.textContent = 'Code expired — click "Get Pairing Code" to generate a new one.';
         el.style.color = 'var(--danger,#e74c3c)';
+        pairingCodeVisible = false;
         return;
       }
       el.textContent = `${seconds}s remaining to enter the code on your phone`;
@@ -234,6 +237,7 @@
         reconnectBtn.style.display = 'none';
         disconnectBtn.style.display = linkedByYou ? 'inline-block' : 'none';
         getPairingBtn.disabled = false;
+        if (pairingCodeVisible) { pairingCodeDisplay.style.display = 'none'; pairingCodeVisible = false; }
         linkedDeviceInfo.style.display = num ? 'block' : 'none';
         linkedDeviceInfo.innerHTML = num
           ? `Linked device: <strong>${num}</strong> ${linkedByYou ? '<span style="color:var(--success,#27ae60)">(linked by you)</span>' : `(linked by ${data.linkedByEmail})`}` + (linkedByYou ? '' : ' — only the linker/admin can re-pair after a disconnect.')
@@ -244,6 +248,17 @@
         reconnectBtn.style.display = data.state === 'disconnected' || data.state === 'connecting' ? 'inline-block' : 'none';
         disconnectBtn.style.display = 'none';
         getPairingBtn.disabled = false;
+        // If a pairing code is on screen but the server socket that registered
+        // it dropped (disconnected / logged_out state), the code is dead — tell
+        // the user instead of letting them wait on a stale countdown.
+        if (pairingCodeVisible && (data.state === 'disconnected' || data.state === 'logged_out')) {
+          const el = document.getElementById('codeCountdown');
+          if (el) {
+            el.textContent = 'The server connection dropped — this code is no longer valid. Click "Get Pairing Code" to generate a new one.';
+            el.style.color = 'var(--danger,#e74c3c)';
+          }
+          pairingCodeVisible = false;
+        }
         linkedDeviceInfo.style.display = num ? 'block' : 'none';
         linkedDeviceInfo.innerHTML = num
           ? `Previously linked: <strong>${num}</strong>${data.linkedByEmail ? ' (linked by ' + data.linkedByEmail + ')' : ''}. ${linkedByYou ? 'You can re-pair a new code.' : 'Only the original linker or admin can re-pair.'}`
